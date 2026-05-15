@@ -1,5 +1,9 @@
 *.egg-info
 .idea
+.vscode
+.claude
+**/__pycache__
+src/assets/data
 outputs
 logs
 wandb
