@@ -25,6 +25,9 @@ python scripts/train.py Unitree-G1-Flat --gpu-ids 0 1 --env.scene.num-envs=4096
 
 # Motion imitation (tracking)
 python scripts/train.py Unitree-G1-Tracking-No-State-Estimation --motion_file=src/assets/motions/g1/dance1_subject2.npz --env.scene.num-envs=4096
+
+# Locomanipulation (lower-body policy + upper-body motion playback)
+python scripts/train.py Unitree-G1-Locomanipulation-Flat --env.scene.num-envs=4096
 ```
 
 ### Play / Visualization
@@ -54,10 +57,11 @@ cd deploy/robots/g1 && mkdir build && cd build && cmake .. && make
 ## Architecture
 
 ### Task System
-Tasks are registered via `register_mjlab_task()` in `src/tasks/<type>/config/<robot>/__init__.py`. Two task families:
+Tasks are registered via `register_mjlab_task()` in `src/tasks/<type>/config/<robot>/__init__.py`. Three task families:
 
 - **Velocity** (`src/tasks/velocity/`): Velocity tracking with flat/rough terrain. Base config in `velocity_env_cfg.py` via `make_velocity_env_cfg()`.
 - **Tracking** (`src/tasks/tracking/`): Motion imitation from NPZ reference motions. Base config in `tracking_env_cfg.py` via `make_tracking_env_cfg()`.
+- **Locomanipulation** (`src/tasks/locomanipulation/`): Lower-body policy (12 DOF) with upper-body motion playback from ACCAD dataset. Base config in `locomanipulation_env_cfg.py` via `make_locomanipulation_env_cfg()`. G1 only.
 
 Robot-specific configs live in `config/<robot>/env_cfgs.py` — they call the base factory and customize scene entities, sensors, reward params, and terminations.
 
@@ -68,12 +72,13 @@ All manager configs (rewards, observations, actions, commands, terminations, eve
 Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.mdp` and adds project-specific:
 - `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py` (velocity)
 - `rewards.py`, `observations.py`, `terminations.py`, `commands.py`, `metrics.py` (tracking)
+- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `velocity_command.py`, `upper_body_action.py` (locomanipulation)
 
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
 
 ### Custom Runners
-`src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `TrackingOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment.
+`src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `TrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment.
 
 ### Deploy (C++)
 `deploy/robots/<robot>/` — C++ control binaries using ONNX Runtime for inference, communicating via CycloneDDS/unitree_sdk2. FSM states in `deploy/include/FSM/`.

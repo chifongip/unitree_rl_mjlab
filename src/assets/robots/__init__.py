@@ -12,6 +12,7 @@ from .unitree_as2.as2_constants import (
 
 from .unitree_g1.g1_constants import (
   G1_ACTION_SCALE as G1_ACTION_SCALE,
+  G1_GAIN_PRESETS as G1_GAIN_PRESETS,
 )
 from .unitree_g1.g1_constants import (
   get_g1_robot_cfg as get_g1_robot_cfg,

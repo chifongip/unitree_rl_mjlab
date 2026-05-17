@@ -4,6 +4,7 @@
 .claude
 **/__pycache__
 src/assets/data
+notes/
 outputs
 logs
 wandb

@@ -1,17 +1,19 @@
 """Unitree G1 locomanipulation environment configurations."""
 
-from src.assets.robots import (
-  G1_ACTION_SCALE,
-  get_g1_robot_cfg,
-)
+import re
+
+from src.assets.robots import get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
+from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
+from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
 
 
@@ -23,7 +25,28 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.sim.contact_sensor_maxmatch = 500
   cfg.sim.nconmax = 48
 
-  cfg.scene.entities = {"robot": get_g1_robot_cfg()}
+  LOWER_BODY_JOINT_NAMES = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+  )
+
+  robot_cfg, action_scale = get_g1_robot_cfg(preset="unitree")
+  cfg.scene.entities = {"robot": robot_cfg}
+  lower_body_action_scale = {
+    pat: val
+    for pat, val in action_scale.items()
+    if any(re.fullmatch(pat, jn) for jn in LOWER_BODY_JOINT_NAMES)
+  }
 
   # Set raycast sensor frame to G1 pelvis.
   for sensor in cfg.scene.sensors or ():
@@ -68,7 +91,24 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
 
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
-  joint_pos_action.scale = G1_ACTION_SCALE
+  joint_pos_action.scale = lower_body_action_scale
+  joint_pos_action.actuator_names = (
+    r".*_hip_pitch_joint",
+    r".*_hip_roll_joint",
+    r".*_hip_yaw_joint",
+    r".*_knee_joint",
+    r".*_ankle_pitch_joint",
+    r".*_ankle_roll_joint",
+  )
+
+  # Upper-body motion playback from ACCAD dataset.
+  # In play mode, default_pose_ratio=1.0 so all envs hold HOME_KEYFRAME.
+  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "accad_all.pkl")
+  cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
+    entity_name="robot",
+    motion_file=motion_file,
+    default_pose_ratio=1.0 if play else 0.5,
+  )
 
   cfg.viewer.body_name = "torso_link"
 
@@ -91,45 +131,75 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   # - Shoulders/elbows get moderate freedom for natural arm swing during walking.
   # - Wrists are loose (0.3) since they don't affect balance much.
   # Running values are ~1.5-2x walking values to accommodate larger motion range.
-  cfg.rewards["pose"].params["std_standing"] = {".*": 0.05}
+  # Restrict pose reward to lower-body joints only — upper body is controlled by
+  # motion playback, not the policy, so penalizing its deviation is misleading.
+  cfg.rewards["pose"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(
+      r".*_hip_pitch_joint",
+      r".*_hip_roll_joint",
+      r".*_hip_yaw_joint",
+      r".*_knee_joint",
+      r".*_ankle_pitch_joint",
+      r".*_ankle_roll_joint",
+    )
+  )
+  cfg.rewards["pose"].params["std_standing"] = {
+    r".*hip_pitch.*": 0.05,
+    r".*hip_roll.*": 0.05,
+    r".*hip_yaw.*": 0.05,
+    r".*knee.*": 0.05,
+    r".*ankle_pitch.*": 0.05,
+    r".*ankle_roll.*": 0.05,
+  }
   cfg.rewards["pose"].params["std_walking"] = {
-    # Lower body.
     r".*hip_pitch.*": 0.5,
     r".*hip_roll.*": 0.15,
     r".*hip_yaw.*": 0.15,
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.15,
     r".*ankle_roll.*": 0.1,
-    # Waist.
-    r".*waist_yaw.*": 0.15,
-    r".*waist_roll.*": 0.1,
-    r".*waist_pitch.*": 0.1,
-    # Arms.
-    r".*shoulder_pitch.*": 0.15,
-    r".*shoulder_roll.*": 0.1,
-    r".*shoulder_yaw.*": 0.1,
-    r".*elbow.*": 0.1,
-    r".*wrist.*": 0.1,
   }
   cfg.rewards["pose"].params["std_running"] = {
-    # Lower body.
     r".*hip_pitch.*": 0.5,
     r".*hip_roll.*": 0.25,
     r".*hip_yaw.*": 0.25,
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
-    # Waist.
-    r".*waist_yaw.*": 0.25,
-    r".*waist_roll.*": 0.1,
-    r".*waist_pitch.*": 0.1,
-    # Arms.
-    r".*shoulder_pitch.*": 0.25,
-    r".*shoulder_roll.*": 0.1,
-    r".*shoulder_yaw.*": 0.1,
-    r".*elbow.*": 0.1,
-    r".*wrist.*": 0.1,
   }
+
+  # Restrict stand_still, joint_acc_l2 and joint_pos_limits to lower-body joints — upper body is
+  # driven by motion playback, not the policy.
+  cfg.rewards["stand_still"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(
+      r".*_hip_pitch_joint",
+      r".*_hip_roll_joint",
+      r".*_hip_yaw_joint",
+      r".*_knee_joint",
+      r".*_ankle_pitch_joint",
+      r".*_ankle_roll_joint",
+    )
+  )
+  cfg.rewards["joint_acc_l2"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(
+      r".*_hip_pitch_joint",
+      r".*_hip_roll_joint",
+      r".*_hip_yaw_joint",
+      r".*_knee_joint",
+      r".*_ankle_pitch_joint",
+      r".*_ankle_roll_joint",
+    )
+  )
+  cfg.rewards["joint_pos_limits"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(
+      r".*_hip_pitch_joint",
+      r".*_hip_roll_joint",
+      r".*_hip_yaw_joint",
+      r".*_knee_joint",
+      r".*_ankle_pitch_joint",
+      r".*_ankle_roll_joint",
+    )
+  )
 
   cfg.rewards["body_orientation_l2"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
