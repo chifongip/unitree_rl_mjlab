@@ -44,6 +44,16 @@ class UpperBodyMotionAction(ActionTerm):
     asset_cfg.resolve(self._env.scene)
     self._joint_ids = asset_cfg.joint_ids
 
+    # Find positions of waist_roll and waist_pitch to zero out when yaw_only is set.
+    if cfg.waist_yaw_only:
+      all_names = self._entity.joint_names
+      zero_names = {"waist_roll_joint", "waist_pitch_joint"}
+      self._waist_zero_cols = [
+        i for i, jid in enumerate(self._joint_ids) if all_names[jid] in zero_names
+      ]
+    else:
+      self._waist_zero_cols = []
+
     # Load motion data and extract upper-body DOF (indices 12-28 = 17 joints).
     data = joblib.load(cfg.motion_file)
     raw_clips: list[torch.Tensor] = []
@@ -162,6 +172,9 @@ class UpperBodyMotionAction(ActionTerm):
     # Substitute default pose for non-motion envs.
     targets = torch.where(use_motion.unsqueeze(1), targets, default_pos)
 
+    if self._waist_zero_cols:
+      targets[:, self._waist_zero_cols] = 0.0
+
     return targets
 
   def apply_actions(self) -> None:
@@ -181,6 +194,9 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
 
   joint_names: tuple[str, ...] = UPPER_BODY_JOINT_NAMES
   """Regex patterns for upper-body joint names."""
+
+  waist_yaw_only: bool = False
+  """If True, only apply waist_yaw_joint from motion data; zero out waist_roll and waist_pitch."""
 
   def build(self, env: ManagerBasedRlEnv) -> UpperBodyMotionAction:
     return UpperBodyMotionAction(self, env)

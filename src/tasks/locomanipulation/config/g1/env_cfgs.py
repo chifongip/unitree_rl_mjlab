@@ -108,6 +108,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     entity_name="robot",
     motion_file=motion_file,
     default_pose_ratio=1.0 if play else 0.5,
+    waist_yaw_only=True,
   )
 
   cfg.viewer.body_name = "torso_link"

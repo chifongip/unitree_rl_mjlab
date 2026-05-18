@@ -5,6 +5,7 @@
 **/__pycache__
 src/assets/data
 notes/
+tea_debug.log
 outputs
 logs
 wandb
