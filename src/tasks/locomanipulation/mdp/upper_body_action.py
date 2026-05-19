@@ -88,6 +88,23 @@ class UpperBodyMotionAction(ActionTerm):
     # Cached single-frame target for pose_only mode.
     self._pose_target = torch.zeros(self.num_envs, 17, device=self.device)
 
+    # Build fixed pose target if specified.
+    self._fixed_pose: torch.Tensor | None = None
+    if cfg.fixed_upper_body_pose is not None:
+      all_names = self._entity.joint_names
+      fixed = self._default_joint_pos[0].clone()  # start from default pose
+      for name, value in cfg.fixed_upper_body_pose.items():
+        # Find this joint's position within the upper-body joint list.
+        matches = [
+          i for i, jid in enumerate(self._joint_ids) if all_names[jid] == name
+        ]
+        if not matches:
+          raise ValueError(f"Joint '{name}' not found in upper-body joints")
+        fixed[matches[0]] = value
+      if self._waist_zero_cols:
+        fixed[self._waist_zero_cols] = 0.0
+      self._fixed_pose = fixed  # (17,)
+
   @property
   def action_dim(self) -> int:
     return 0
@@ -111,6 +128,20 @@ class UpperBodyMotionAction(ActionTerm):
       )
     else:
       count = len(env_ids)
+
+    # Fixed pose mode: write the fixed pose and skip random sampling.
+    if self._fixed_pose is not None:
+      targets = self._fixed_pose.unsqueeze(0).expand(count, -1)
+      self._entity.write_joint_state_to_sim(
+        targets, torch.zeros_like(targets), env_ids=env_ids, joint_ids=self._joint_ids
+      )
+      if isinstance(env_ids, slice):
+        self._entity._data.joint_pos_target[:, self._joint_ids] = targets
+        self._pose_target[:] = targets
+      else:
+        self._entity._data.joint_pos_target[env_ids.unsqueeze(1), self._joint_ids] = targets
+        self._pose_target[env_ids] = targets
+      return
 
     # Sample random clips and start frames (vectorized).
     rand_clips = torch.randint(0, self._num_clips, (count,), device=self.device)
@@ -182,9 +213,9 @@ class UpperBodyMotionAction(ActionTerm):
     if env_ids is None:
       env_ids = slice(None)
 
-    # In pose_only mode, return the cached single-frame target (already includes
+    # Fixed pose or pose_only mode: return the cached target (already includes
     # default pose substitution and waist zeroing from reset).
-    if self.cfg.pose_only:
+    if self._fixed_pose is not None or self.cfg.pose_only:
       if isinstance(env_ids, slice):
         return self._pose_target
       return self._pose_target[env_ids]
@@ -246,6 +277,11 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
   pose_only: bool = False
   """If True, sample a single random frame at reset and hold it for the full episode
   instead of playing back the clip frame-by-frame."""
+
+  fixed_upper_body_pose: dict[str, float] | None = None
+  """If set, all envs use this exact pose instead of random sampling.
+  Keys are joint names (e.g. "left_shoulder_pitch_joint"), values in radians.
+  Overrides default_pose_ratio and pose_only when set."""
 
   def build(self, env: ManagerBasedRlEnv) -> UpperBodyMotionAction:
     return UpperBodyMotionAction(self, env)

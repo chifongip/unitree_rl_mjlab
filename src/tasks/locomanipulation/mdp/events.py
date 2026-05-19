@@ -29,8 +29,8 @@ class HandForceEvent:
   def viz_cfg(self):
     class VizCfg:
       rgba: tuple[float, float, float, float] = (0.9, 0.2, 0.8, 0.9)
-      scale: float = 0.005
-      width: float = 0.015
+      scale: float = 0.02
+      width: float = 0.005
       min_force: float = 1.0
     return VizCfg()
 
@@ -66,8 +66,22 @@ class HandForceEvent:
     force_scale: float = 0.0,
     zero_force_prob: dict[str, float] | None = None,
     force_range: dict[str, tuple[float, float]] | None = None,
+    constant_force: dict[str, float] | None = None,
   ) -> None:
     del env, env_ids, asset_cfg
+
+    # Constant force mode: apply a fixed force every step, bypass impulse lifecycle.
+    if constant_force is not None:
+      n = self._num_envs
+      forces = torch.zeros(n, self._num_bodies, 3, device=self._device)
+      for axis, key in enumerate(("x", "y", "z")):
+        forces[:, :, axis] = constant_force.get(key, 0.0)
+      self._asset.write_external_wrench_to_sim(
+        forces, torch.zeros_like(forces), body_ids=self._body_ids
+      )
+      self._active[:] = True
+      return
+
     dt = self._step_dt
 
     # Compute force_range from force_range_max × effective_scale.

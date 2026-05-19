@@ -118,6 +118,16 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 
 **Config:** `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]` in `config/g1/env_cfgs.py`. Play mode removes `hand_force`.
 
+### Locomanipulation Play-Mode Testing
+
+Three config options enable controlled model comparison in play mode:
+
+- **`fixed_upper_body_pose`** (`UpperBodyMotionActionCfg`): `dict[str, float] | None` — pin all envs to a specific pose (joint name → radians). Set in `env_cfgs.py` or via `--env.actions.upper_body_motion.fixed_upper_body_pose='{"left_shoulder_pitch_joint": -1.57}'`.
+- **`constant_force`** (`HandForceEvent` params): `dict[str, float] | None` — apply a fixed force every step (axis → Newtons). Set via `--env.events.hand_force.params.constant_force='{"z": -10.0}'`.
+- **`fixed_command`** (`UniformVelocityCommandCfg`): `tuple[float, float, float] | None` — pin velocity to `(lin_vel_x, lin_vel_y, ang_vel_z)`. Set via `--env.commands.twist.fixed_command='(0.5,0.0,0.0)'`.
+
+All default to `None` (existing behavior). Play mode keeps `hand_force` event with random forces disabled; set `constant_force` to activate.
+
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
 

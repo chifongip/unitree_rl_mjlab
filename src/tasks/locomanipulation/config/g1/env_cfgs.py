@@ -284,13 +284,40 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
 
     cfg.observations["actor"].enable_corruption = False
     cfg.events.pop("push_robot", None)
-    cfg.events.pop("hand_force", None)
     cfg.curriculum = {}
+
+    # Keep hand_force for constant-force testing; disable random impulse lifecycle.
+    cfg.events["hand_force"].params["no_force_ratio"] = 1.0
+    cfg.events["hand_force"].params["force_range_max"] = {
+      "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)
+    }
     cfg.events["randomize_terrain"] = EventTermCfg(
       func=envs_mdp.randomize_terrain,
       mode="reset",
       params={},
     )
+
+    cfg.actions["upper_body_motion"].fixed_upper_body_pose = {
+      "waist_yaw_joint": 0.0,
+      "waist_roll_joint": 0.0,
+      "waist_pitch_joint": 0.0,
+      "left_shoulder_pitch_joint": 0.0,
+      "left_shoulder_roll_joint": 0.0,
+      "left_shoulder_yaw_joint": 0.0,
+      "left_elbow_joint": 0.0,
+      "left_wrist_roll_joint": 0.0,
+      "left_wrist_pitch_joint": 0.0,
+      "left_wrist_yaw_joint": 0.0,
+      "right_shoulder_pitch_joint": 0.0,
+      "right_shoulder_roll_joint": 0.0,
+      "right_shoulder_yaw_joint": 0.0,
+      "right_elbow_joint": 0.0,
+      "right_wrist_roll_joint": 0.0,
+      "right_wrist_pitch_joint": 0.0,
+      "right_wrist_yaw_joint": 0.0,
+    }
+    cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
+    cfg.commands["twist"].fixed_command = (1.0, 0.0, 0.0)
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
