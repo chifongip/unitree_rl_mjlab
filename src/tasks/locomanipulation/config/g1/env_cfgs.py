@@ -109,8 +109,9 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
-    default_pose_ratio=1.0 if play else 0.5,
+    default_pose_ratio=1.0,
     waist_yaw_only=True,
+    pose_only=True,
   )
 
   cfg.viewer.body_name = "torso_link"
@@ -162,13 +163,29 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     },
   )
   cfg.curriculum["force_curriculum"] = CurriculumTermCfg(
-    func=mdp.force_curriculum,
+    func=mdp.force_scale_staged,
     params={
       "event_name": "hand_force",
-      "min_episode_length": 10.0,
-      "max_episode_length": 11.0,
-      "force_scale_increment": 0.02,
-      "num_steps_per_env": 24,
+      "stages": [
+        {"step": 0, "scale": 0.0},
+        {"step": 2000 * 24, "scale": 0.2},
+        {"step": 4000 * 24, "scale": 0.5},
+        {"step": 6000 * 24, "scale": 0.8},
+        {"step": 8000 * 24, "scale": 1.0},
+      ],
+    },
+  )
+  cfg.curriculum["default_pose_ratio"] = CurriculumTermCfg(
+    func=mdp.default_pose_ratio_staged,
+    params={
+      "action_name": "upper_body_motion",
+      "stages": [
+        {"step": 0, "ratio": 1.0},
+        {"step": 2000 * 24, "ratio": 0.8},
+        {"step": 4000 * 24, "ratio": 0.5},
+        {"step": 6000 * 24, "ratio": 0.2},
+        {"step": 8000 * 24, "ratio": 0.0},
+      ],
     },
   )
 

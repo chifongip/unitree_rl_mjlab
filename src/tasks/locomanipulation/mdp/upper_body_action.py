@@ -32,6 +32,9 @@ class UpperBodyMotionAction(ActionTerm):
   At each reset, a random motion clip and start frame are selected.
   During the episode, the frame index is computed from elapsed time
   (step count × step_dt) and the clip's fps, with wrapping.
+
+  When cfg.pose_only is True, a single random frame is sampled at reset
+  and held for the full episode (no time-varying playback).
   """
 
   cfg: UpperBodyMotionActionCfg
@@ -82,6 +85,9 @@ class UpperBodyMotionAction(ActionTerm):
     self._clip_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self._start_frame = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
+    # Cached single-frame target for pose_only mode.
+    self._pose_target = torch.zeros(self.num_envs, 17, device=self.device)
+
   @property
   def action_dim(self) -> int:
     return 0
@@ -122,6 +128,19 @@ class UpperBodyMotionAction(ActionTerm):
       self._clip_idx[env_ids] = rand_clips
       self._start_frame[env_ids] = rand_starts
 
+    # In pose_only mode, cache the sampled frame as a fixed target for the episode.
+    if self.cfg.pose_only:
+      default_pos = (
+        self._default_joint_pos
+        if isinstance(env_ids, slice)
+        else self._default_joint_pos[env_ids]
+      )
+      targets = self._compute_frame_targets(rand_clips, rand_starts, use_default, default_pos)
+      if isinstance(env_ids, slice):
+        self._pose_target[:] = targets
+      else:
+        self._pose_target[env_ids] = targets
+
     # Write first frame to sim state and set actuator targets.
     first_frame = self._gather_targets(env_ids)
     self._entity.write_joint_state_to_sim(
@@ -138,13 +157,39 @@ class UpperBodyMotionAction(ActionTerm):
         first_frame
       )
 
+  def _compute_frame_targets(
+    self,
+    clip_idx: torch.Tensor,
+    start_frame: torch.Tensor,
+    use_default: torch.Tensor,
+    default_pos: torch.Tensor,
+  ) -> torch.Tensor:
+    """Look up a single frame from the motion data for each env.
+
+    Used by reset() to cache pose targets in pose_only mode.
+    """
+    safe_clip_idx = clip_idx.clamp(min=0)
+    targets = self._clips[safe_clip_idx, start_frame]  # (n, 17)
+    targets = torch.where((~use_default).unsqueeze(1), targets, default_pos)
+    if self._waist_zero_cols:
+      targets[:, self._waist_zero_cols] = 0.0
+    return targets
+
   def _gather_targets(
     self, env_ids: torch.Tensor | slice | None = None
   ) -> torch.Tensor:
-    """Compute upper-body targets for the given envs from elapsed time."""
+    """Compute upper-body targets for the given envs."""
     if env_ids is None:
       env_ids = slice(None)
 
+    # In pose_only mode, return the cached single-frame target (already includes
+    # default pose substitution and waist zeroing from reset).
+    if self.cfg.pose_only:
+      if isinstance(env_ids, slice):
+        return self._pose_target
+      return self._pose_target[env_ids]
+
+    # Clip playback mode: compute frame index from elapsed time.
     if isinstance(env_ids, slice):
       clip_idx = self._clip_idx
       start_frame = self._start_frame
@@ -197,6 +242,10 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
 
   waist_yaw_only: bool = False
   """If True, only apply waist_yaw_joint from motion data; zero out waist_roll and waist_pitch."""
+
+  pose_only: bool = False
+  """If True, sample a single random frame at reset and hold it for the full episode
+  instead of playing back the clip frame-by-frame."""
 
   def build(self, env: ManagerBasedRlEnv) -> UpperBodyMotionAction:
     return UpperBodyMotionAction(self, env)

@@ -27,6 +27,16 @@ class RewardWeightStage(TypedDict):
   weight: float
 
 
+class ForceScaleStage(TypedDict):
+  step: int
+  scale: float
+
+
+class DefaultPoseRatioStage(TypedDict):
+  step: int
+  ratio: float
+
+
 def terrain_levels_vel(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -107,7 +117,37 @@ def reward_weight(
   return torch.tensor([reward_term_cfg.weight])
 
 
-def force_curriculum(
+def force_scale_staged(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | slice | None,
+  event_name: str,
+  stages: list[ForceScaleStage],
+) -> torch.Tensor:
+  """Set force_scale based on training step thresholds."""
+  del env_ids
+  event_cfg = env.event_manager.get_term_cfg(event_name)
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      event_cfg.params["force_scale"] = stage["scale"]
+  return torch.tensor([event_cfg.params["force_scale"]])
+
+
+def default_pose_ratio_staged(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | slice | None,
+  action_name: str,
+  stages: list[DefaultPoseRatioStage],
+) -> torch.Tensor:
+  """Set default_pose_ratio based on training step thresholds."""
+  del env_ids
+  term = env.action_manager.get_term(action_name)
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      term.cfg.default_pose_ratio = stage["ratio"]
+  return torch.tensor([term.cfg.default_pose_ratio])
+
+
+def force_curriculum_adaptive(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | slice | None,
   event_name: str,

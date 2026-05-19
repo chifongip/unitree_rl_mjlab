@@ -32,7 +32,18 @@ python scripts/train.py Unitree-G1-Locomanipulation-Flat --env.scene.num-envs=40
 
 ### Play / Visualization
 ```bash
+# Trained policy
 python scripts/play.py Unitree-G1-Flat --checkpoint_file=logs/rsl_rl/g1_velocity/<date>/model_<iter>.pt
+
+# Dummy agents (no checkpoint needed)
+python scripts/play.py Unitree-G1-Flat --agent zero
+python scripts/play.py Unitree-G1-Flat --agent random
+
+# Record video
+python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --video --video-length 200
+
+# Headless viewer (no display)
+python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --viewer viser
 ```
 
 ### Convert motion CSV to NPZ
@@ -42,6 +53,9 @@ python scripts/csv_to_npz.py --input-file src/assets/motions/g1/dance1.csv --out
 
 ### Deploy (C++ on real robot or unitree_mujoco simulator)
 ```bash
+# Install C++ build dependencies (Ubuntu)
+sudo apt install -y libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
+
 # Build unitree_mujoco simulator
 cd simulate && mkdir build && cd build && cmake .. && make -j8
 
@@ -52,6 +66,11 @@ cd deploy/robots/g1 && mkdir build && cd build && cmake .. && make
 ./g1_ctrl --network=lo
 # Run on real robot
 ./g1_ctrl --network=enp5s0
+```
+
+### List Registered Environments
+```bash
+python scripts/list_envs.py
 ```
 
 ## Architecture
@@ -74,6 +93,15 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 - `rewards.py`, `observations.py`, `terminations.py`, `commands.py`, `metrics.py` (tracking)
 - `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `events.py`, `velocity_command.py`, `upper_body_action.py` (locomanipulation)
 
+### Locomanipulation Upper-Body Modes
+
+`UpperBodyMotionAction` (`src/tasks/locomanipulation/mdp/upper_body_action.py`) drives upper-body joints (17 DOF) from ACCAD motion data. Two modes:
+
+- **Clip playback** (`pose_only=False`): plays back motion clips frame-by-frame, wrapping cyclically.
+- **Pose only** (`pose_only=True`): samples a single random frame at reset and holds it for the full episode. Default during training.
+
+`default_pose_ratio` controls the fraction of envs holding HOME_KEYFRAME vs a motion-derived pose. A step-based curriculum (`default_pose_ratio_staged` in `curriculums.py`) can lower this ratio over training to gradually introduce more diverse poses.
+
 ### Locomanipulation Force Curriculum
 
 `HandForceEvent` (`src/tasks/locomanipulation/mdp/events.py`) applies random external wrenches to end-effector bodies to simulate carrying heavy objects. Forces are specified in the **world frame** via `write_external_wrench_to_sim`.
@@ -84,7 +112,9 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 - `zero_force_prob`: per-axis independent probability of zeroing that force component.
 - `body_point_offset_range`: local-frame offset rotated to world frame; torque = `cross(offset_w, force)`.
 
-**Curriculum** (`force_curriculum` in `curriculums.py`): adjusts `force_scale` based on completed episode length mean. Limited to one update per `num_steps_per_env` (24) steps. Scale increases when episodes exceed `max_episode_length`, decreases when below `min_episode_length`, clamped to [0, 1].
+**Curriculum** — two options in `curriculums.py`:
+- `force_scale_staged`: step-based schedule (e.g., `step:0→scale:0, step:48000→scale:0.2`). Default.
+- `force_curriculum_adaptive`: adjusts `force_scale` based on completed episode length mean.
 
 **Config:** `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]` in `config/g1/env_cfgs.py`. Play mode removes `hand_force`.
 
@@ -92,7 +122,7 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
 
 ### Custom Runners
-`src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `TrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment.
+`src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `MotionTrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment.
 
 ### Deploy (C++)
 `deploy/robots/<robot>/` — C++ control binaries using ONNX Runtime for inference, communicating via CycloneDDS/unitree_sdk2. FSM states in `deploy/include/FSM/`.
@@ -110,3 +140,6 @@ Both `train.py` and `play.py` use [tyro](https://github.com/brentyi/tyro) for CL
 - Sensors: `ContactSensorCfg`, `RayCastSensorCfg` from `mjlab.sensor`
 - Terrain: `TerrainEntityCfg`, `TerrainGeneratorCfg` from `mjlab.terrains`
 - Training: `MjlabOnPolicyRunner`, `RslRlVecEnvWrapper` from `mjlab.rl`
+
+## Testing / Linting
+No test suite, CI, or linting configuration exists in this repository.
