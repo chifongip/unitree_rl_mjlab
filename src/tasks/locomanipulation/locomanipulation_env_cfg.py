@@ -118,6 +118,12 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       func=mdp.foot_contact_forces,
       params={"sensor_name": "feet_ground_contact"},
     ),
+    "wrist_force": ObservationTermCfg(
+      func=mdp.wrist_external_force,
+      params={
+        "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+      },
+    ),
   }
 
   observations = {

@@ -44,6 +44,36 @@ def foot_contact_forces(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tenso
   return torch.sign(forces_flat) * torch.log1p(torch.abs(forces_flat))
 
 
+def wrist_external_force(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """External forces on specified bodies in pelvis-local frame, sign-log compressed.
+
+    Privileged observation for the critic — wrist force sensors don't exist
+    on the real robot. Forces are rotated from world frame into the root link
+    (pelvis) frame so the critic sees the effective loading direction relative
+    to the body, matching the frame of other core observations.
+    """
+    from mjlab.utils.lab_api.math import quat_apply_inverse
+
+    asset: Entity = env.scene[asset_cfg.name]
+    # World-frame force on the specified bodies.
+    force_w = asset.data.body_external_wrench[:, asset_cfg.body_ids, :3]  # [B, N, 3]
+    B, N, _ = force_w.shape
+
+    # Rotate world → pelvis-local frame.
+    pelvis_quat_w = asset.data.root_link_quat_w  # [B, 4]
+    pelvis_quat_w_expanded = pelvis_quat_w.unsqueeze(1).expand(B, N, 4)  # [B, N, 4]
+    force_b = quat_apply_inverse(
+        pelvis_quat_w_expanded.reshape(B * N, 4),
+        force_w.reshape(B * N, 3),
+    ).reshape(B, N * 3)  # [B, N*3]
+
+    # Sign-log compress for NN-friendly range.
+    return torch.sign(force_b) * torch.log1p(torch.abs(force_b))
+
+
 def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Tensor:
     global_phase = (env.episode_length_buf * env.step_dt) % period / period
     phase = torch.zeros(env.num_envs, 2, device=env.device)

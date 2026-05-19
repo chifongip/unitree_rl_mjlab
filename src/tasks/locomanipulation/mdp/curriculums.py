@@ -105,3 +105,43 @@ def reward_weight(
     if env.common_step_counter > stage["step"]:
       reward_term_cfg.weight = stage["weight"]
   return torch.tensor([reward_term_cfg.weight])
+
+
+def force_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | slice | None,
+  event_name: str,
+  min_episode_length: float,
+  max_episode_length: float,
+  force_scale_increment: float,
+  num_steps_per_env: int,
+) -> torch.Tensor:
+  """Adjust force scale (0-1) based on completed episode lengths.
+
+  force_scale=0 → no force, force_scale=1 → full force_range_max.
+  Updates at most once per num_steps_per_env steps to avoid excessive changes.
+  Uses mean of completed episode lengths to match Train/mean_episode_length.
+  """
+  event_cfg = env.event_manager.get_term_cfg(event_name)
+
+  # Cooldown: only update once per num_steps_per_env steps.
+  last_step = getattr(event_cfg, "_force_last_update_step", 0)
+  if env.common_step_counter - last_step < num_steps_per_env:
+    return torch.tensor([event_cfg.params["force_scale"]])
+  event_cfg._force_last_update_step = env.common_step_counter
+
+  # Mean of completed episode lengths (same as Train/mean_episode_length).
+  if env_ids is None:
+    env_ids = slice(None)
+  completed_len = env.episode_length_buf[env_ids].float().mean().item() * env.step_dt
+  current_scale = event_cfg.params["force_scale"]
+
+  if completed_len > max_episode_length:
+    new_scale = min(current_scale + force_scale_increment, 1.0)
+  elif completed_len < min_episode_length:
+    new_scale = max(current_scale - force_scale_increment, 0.0)
+  else:
+    new_scale = current_scale
+
+  event_cfg.params["force_scale"] = new_scale
+  return torch.tensor([new_scale])

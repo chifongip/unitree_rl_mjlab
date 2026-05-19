@@ -72,7 +72,21 @@ All manager configs (rewards, observations, actions, commands, terminations, eve
 Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.mdp` and adds project-specific:
 - `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py` (velocity)
 - `rewards.py`, `observations.py`, `terminations.py`, `commands.py`, `metrics.py` (tracking)
-- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `velocity_command.py`, `upper_body_action.py` (locomanipulation)
+- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `events.py`, `velocity_command.py`, `upper_body_action.py` (locomanipulation)
+
+### Locomanipulation Force Curriculum
+
+`HandForceEvent` (`src/tasks/locomanipulation/mdp/events.py`) applies random external wrenches to end-effector bodies to simulate carrying heavy objects. Forces are specified in the **world frame** via `write_external_wrench_to_sim`.
+
+**Lifecycle:** Each env cycles through cooldown → trigger → sustain (duration) → expire.
+- `force_range_max * force_scale` defines the per-axis force sampling range, where `force_scale ∈ [0, 1]` is learned by the curriculum.
+- `no_force_ratio` (0.05): fraction of envs receiving zero force for baseline episodes.
+- `zero_force_prob`: per-axis independent probability of zeroing that force component.
+- `body_point_offset_range`: local-frame offset rotated to world frame; torque = `cross(offset_w, force)`.
+
+**Curriculum** (`force_curriculum` in `curriculums.py`): adjusts `force_scale` based on completed episode length mean. Limited to one update per `num_steps_per_env` (24) steps. Scale increases when episodes exceed `max_episode_length`, decreases when below `min_episode_length`, clamped to [0, 1].
+
+**Config:** `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]` in `config/g1/env_cfgs.py`. Play mode removes `hand_force`.
 
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
@@ -96,67 +110,3 @@ Both `train.py` and `play.py` use [tyro](https://github.com/brentyi/tyro) for CL
 - Sensors: `ContactSensorCfg`, `RayCastSensorCfg` from `mjlab.sensor`
 - Terrain: `TerrainEntityCfg`, `TerrainGeneratorCfg` from `mjlab.terrains`
 - Training: `MjlabOnPolicyRunner`, `RslRlVecEnvWrapper` from `mjlab.rl`
-
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
