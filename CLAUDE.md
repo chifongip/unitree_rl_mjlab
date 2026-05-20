@@ -91,7 +91,7 @@ All manager configs (rewards, observations, actions, commands, terminations, eve
 Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.mdp` and adds project-specific:
 - `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py` (velocity)
 - `rewards.py`, `observations.py`, `terminations.py`, `commands.py`, `metrics.py` (tracking)
-- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `events.py`, `velocity_command.py`, `upper_body_action.py` (locomanipulation)
+- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `events.py`, `velocity_command.py`, `height_command.py`, `upper_body_action.py` (locomanipulation)
 
 ### Locomanipulation Upper-Body Modes
 
@@ -142,11 +142,12 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 
 ### Locomanipulation Play-Mode Testing
 
-Three config options enable controlled model comparison in play mode:
+Four config options enable controlled model comparison in play mode:
 
 - **`fixed_upper_body_pose`** (`UpperBodyMotionActionCfg`): `dict[str, float] | None` — pin all envs to a specific pose (joint name → radians). Set in `env_cfgs.py` or via `--env.actions.upper_body_motion.fixed_upper_body_pose='{"left_shoulder_pitch_joint": -1.57}'`.
 - **`constant_force`** (`HandForceEvent` params): `dict[str, float] | None` — apply a fixed force every step (axis → Newtons). Set via `--env.events.hand_force.params.constant_force='{"z": -10.0}'`.
 - **`fixed_command`** (`UniformVelocityCommandCfg`): `tuple[float, float, float] | None` — pin velocity to `(lin_vel_x, lin_vel_y, ang_vel_z)`. Set via `--env.commands.twist.fixed_command='(0.5,0.0,0.0)'`.
+- **`fixed_height`** (`BaseHeightCommandCfg`): `float | None` — pin commanded height (meters). Set via `--env.commands.base_height.fixed_height=0.7`.
 
 All default to `None` (existing behavior). Play mode keeps `hand_force` event with random forces disabled; set `constant_force` to activate.
 
@@ -170,6 +171,24 @@ Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring
 **Runner lifecycle**: `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before `super().__init__()` to avoid kwarg conflict with PPO, then sets `self.alg.symmetry` directly (without mutating `self.cfg`, which `train.py` later dumps to YAML).
 
 **Tests**: `tests/test_symmetry.py` — 25 mock tests covering joint swaps, sign flips, per-term mirror rules, batch doubling, and double-mirror identity.
+
+### Locomanipulation Base Height Command
+
+`BaseHeightCommand` (`src/tasks/locomanipulation/mdp/height_command.py`) commands an absolute world-frame z-height for the robot root. The robot must maintain the specified height whether standing or walking.
+
+**Command:** `BaseHeightCommandCfg` with `ranges=(min_z, max_z)` and optional `fixed_height` for play mode. Default range for G1: (0.5, 0.785) meters.
+
+**Reward:** `track_base_height` in `rewards.py` — Gaussian kernel `exp(-(cmd_z - actual_z)^2 / std^2)` with `std = sqrt(0.05)`.
+
+**Observation:** `base_height_command` in both actor and critic groups, exposed via `generated_commands` with `command_name="base_height"`. Shape: `[num_envs, 1]`.
+
+**Height-dependent posture:** `variable_posture` reward accepts `base_height_command_name` and `height_postures` params. When set, the desired posture is looked up from a `{height: {joint_name: radians}}` table based on the commanded height, instead of using the fixed `default_joint_pos`. This ensures the pose reference adapts (e.g., bent knees when crouching).
+
+**Height posture table (G1):** 7 entries from 0.50m to 0.785m at 0.05m intervals. Computed offline via `scripts/compute_height_postures.py` (IK solver using MuJoCo forward kinematics + scipy optimization). The script constrains foot capsule geoms to ground (z=0), pelvis above foot centroid, and legs in the sagittal plane. Run with `--show` to visualize in MuJoCo viewer.
+
+**Play mode:** `fixed_height=0.785` (nominal G1 height). Set via `--env.commands.base_height.fixed_height=0.7`.
+
+**Symmetry:** Height command is a scalar z-value, invariant under sagittal mirror. No special mirror transform needed.
 
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
