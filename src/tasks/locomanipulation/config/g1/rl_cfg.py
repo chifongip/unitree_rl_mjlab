@@ -1,10 +1,21 @@
 """RL configuration for Unitree G1 locomanipulation task."""
 
+from dataclasses import dataclass
+
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
   RslRlPpoAlgorithmCfg,
 )
+
+
+@dataclass
+class SymmetryPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+  """PPO algorithm config with symmetry data augmentation support."""
+
+  symmetry_cfg: bool = True
+  """Enable left-right symmetric data augmentation. Default True.
+  Set to False via --agent.algorithm.symmetry_cfg=false to disable."""
 
 
 def unitree_g1_locomanipulation_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -25,7 +36,7 @@ def unitree_g1_locomanipulation_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       activation="elu",
       obs_normalization=True,
     ),
-    algorithm=RslRlPpoAlgorithmCfg(
+    algorithm=SymmetryPpoAlgorithmCfg(
       value_loss_coef=1.0,
       use_clipped_value_loss=True,
       clip_param=0.2,
@@ -42,5 +53,5 @@ def unitree_g1_locomanipulation_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     experiment_name="g1_locomanipulation",
     save_interval=500,
     num_steps_per_env=24,
-    max_iterations=10001,
+    max_iterations=20001,
   )

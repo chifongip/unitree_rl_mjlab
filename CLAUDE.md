@@ -128,6 +128,27 @@ Three config options enable controlled model comparison in play mode:
 
 All default to `None` (existing behavior). Play mode keeps `hand_force` event with random forces disabled; set `constant_force` to activate.
 
+### Locomanipulation Symmetric Data Augmentation
+
+Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring observations and actions across the sagittal plane (x-z plane, flip y-axis). Implementation in `src/tasks/locomanipulation/mdp/symmetry.py`.
+
+**Mirror rules** (MuJoCo convention: x=forward, y=left, z=up):
+- `base_ang_vel`: negate [0], [2] (pseudovector)
+- `projected_gravity`: negate [1]
+- `command`: negate [1] (lin_vel_y), [2] (ang_vel_z)
+- `phase`: negate [0], [1] (half-period shift)
+- `joint_pos/vel` (29 DOF): swap L/R pairs + negate roll/yaw joints
+- `actions` (12 DOF lower body): same swap+negate
+- Foot/wrist force terms: swap L/R + negate y-component
+
+**Sign-flip joints**: all roll and yaw joints. Pitch joints do NOT flip.
+
+**Config**: `SymmetryPpoAlgorithmCfg` (local subclass of `RslRlPpoAlgorithmCfg`) in `rl_cfg.py` with `symmetry_cfg: bool` field. Enabled by default. Disable via `--agent.algorithm.symmetry_cfg=False`.
+
+**Runner lifecycle**: `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before `super().__init__()` to avoid kwarg conflict with PPO, then sets `self.alg.symmetry` directly (without mutating `self.cfg`, which `train.py` later dumps to YAML).
+
+**Tests**: `tests/test_symmetry.py` — 25 mock tests covering joint swaps, sign flips, per-term mirror rules, batch doubling, and double-mirror identity.
+
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
 
@@ -152,4 +173,4 @@ Both `train.py` and `play.py` use [tyro](https://github.com/brentyi/tyro) for CL
 - Training: `MjlabOnPolicyRunner`, `RslRlVecEnvWrapper` from `mjlab.rl`
 
 ## Testing / Linting
-No test suite, CI, or linting configuration exists in this repository.
+No CI or linting configuration exists. Mock tests in `tests/test_symmetry.py` verify symmetry augmentation correctness. Run with `python tests/test_symmetry.py` (pytest has ROS plugin conflicts).

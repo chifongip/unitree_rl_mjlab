@@ -42,7 +42,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     "right_ankle_roll_joint",
   )
 
-  robot_cfg, action_scale = get_g1_robot_cfg(preset="unitree")
+  robot_cfg, action_scale = get_g1_robot_cfg(preset="unitree_stiff")
   cfg.scene.entities = {"robot": robot_cfg}
   lower_body_action_scale = {
     pat: val
@@ -169,9 +169,10 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       "stages": [
         {"step": 0, "scale": 0.0},
         {"step": 2000 * 24, "scale": 0.2},
-        {"step": 4000 * 24, "scale": 0.5},
-        {"step": 6000 * 24, "scale": 0.8},
-        {"step": 8000 * 24, "scale": 1.0},
+        {"step": 4500 * 24, "scale": 0.4},
+        {"step": 7500 * 24, "scale": 0.6},
+        {"step": 11000 * 24, "scale": 0.8},
+        {"step": 15000 * 24, "scale": 1.0},
       ],
     },
   )
@@ -182,9 +183,10 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       "stages": [
         {"step": 0, "ratio": 1.0},
         {"step": 2000 * 24, "ratio": 0.8},
-        {"step": 4000 * 24, "ratio": 0.5},
-        {"step": 6000 * 24, "ratio": 0.2},
-        {"step": 8000 * 24, "ratio": 0.0},
+        {"step": 4500 * 24, "ratio": 0.6},
+        {"step": 7500 * 24, "ratio": 0.4},
+        {"step": 11000 * 24, "ratio": 0.2},
+        {"step": 15000 * 24, "ratio": 0.0},
       ],
     },
   )
