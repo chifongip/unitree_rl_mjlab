@@ -460,21 +460,74 @@ class variable_posture:
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
 
 
-def stand_still(
-        env: ManagerBasedRlEnv,
-        command_name: str,
-        command_threshold: float = 0.1,
-        asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
-) -> torch.Tensor:
+class stand_still:
+  """Penalize joint deviation from target pose when standing still.
+
+  When height_postures and base_height_command_name are set, the target pose is
+  looked up from the height_postures table based on the commanded height.
+  Otherwise, default_joint_pos is used.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    default_joint_pos = asset.data.default_joint_pos
+    assert default_joint_pos is not None
+    self.default_joint_pos = default_joint_pos
+
+    _, joint_names = asset.find_joints(cfg.params["asset_cfg"].joint_names)
+
+    # Height-dependent posture lookup.
+    self.base_height_command_name = cfg.params.get("base_height_command_name", None)
+    height_postures = cfg.params.get("height_postures", None)
+    if height_postures is not None and self.base_height_command_name is not None:
+      sorted_heights = sorted(height_postures.keys())
+      self._height_keys = torch.tensor(sorted_heights, device=env.device, dtype=torch.float32)
+      posture_rows = []
+      for h in sorted_heights:
+        _, _, vals = resolve_matching_names_values(
+          data=height_postures[h],
+          list_of_strings=joint_names,
+        )
+        posture_rows.append(vals)
+      self._height_posture_matrix = torch.tensor(
+        posture_rows, device=env.device, dtype=torch.float32
+      )  # [H, J]
+    else:
+      self._height_keys = None
+      self._height_posture_matrix = None
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    height_postures: dict | None = None,
+    base_height_command_name: str | None = None,
+  ) -> torch.Tensor:
+    del height_postures, base_height_command_name  # Used in __init__.
+
     asset: Entity = env.scene[asset_cfg.name]
-    diff_angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+
+    # Select target posture based on commanded height.
+    if self._height_posture_matrix is not None and self.base_height_command_name is not None:
+      height_cmd = env.command_manager.get_command(self.base_height_command_name)
+      assert height_cmd is not None
+      cmd_z = height_cmd[:, 0]  # [B]
+      distances = torch.abs(cmd_z.unsqueeze(1) - self._height_keys.unsqueeze(0))  # [B, H]
+      closest_idx = torch.argmin(distances, dim=1)  # [B]
+      target = self._height_posture_matrix[closest_idx]  # [B, J]
+    else:
+      target = self.default_joint_pos[:, asset_cfg.joint_ids]
+
+    diff_angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - target
     reward = torch.sum(torch.square(diff_angle), dim=1)
     if command_name is not None:
-        command = env.command_manager.get_command(command_name)
-        if command is not None:
-            linear_norm = torch.norm(command[:, :2], dim=1)
-            angular_norm = torch.abs(command[:, 2])
-            total_command = linear_norm + angular_norm
-            scale = (total_command <= command_threshold).float()
-            reward *= scale
+      command = env.command_manager.get_command(command_name)
+      if command is not None:
+        linear_norm = torch.norm(command[:, :2], dim=1)
+        angular_norm = torch.abs(command[:, 2])
+        total_command = linear_norm + angular_norm
+        scale = (total_command <= command_threshold).float()
+        reward *= scale
     return reward

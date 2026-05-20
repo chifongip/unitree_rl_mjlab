@@ -102,6 +102,10 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       params={"sensor_name": "robot/imu_lin_vel"},
       noise=Unoise(n_min=-0.5, n_max=0.5),
     ),
+    "base_height": ObservationTermCfg(
+      func=mdp.root_height,
+      noise=Unoise(n_min=-0.01, n_max=0.01),
+    ),
     "height_scan": ObservationTermCfg(
       func=envs_mdp.height_scan,
       params={"sensor_name": "terrain_scan"},

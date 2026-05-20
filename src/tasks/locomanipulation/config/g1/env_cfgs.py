@@ -264,7 +264,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
   }
-  cfg.rewards["pose"].params["height_postures"] = {
+  height_postures = {
     0.5: {
       "left_hip_pitch_joint": -1.055, "left_hip_roll_joint": 0.0001, "left_hip_yaw_joint": -0.0,
       "left_knee_joint": 1.949, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": -0.0001,
@@ -308,6 +308,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       "right_knee_joint": 0.0448, "right_ankle_pitch_joint": -0.0372, "right_ankle_roll_joint": -0.0004,
     },
   }
+  cfg.rewards["pose"].params["height_postures"] = height_postures
 
   # Restrict stand_still, joint_acc_l2 and joint_pos_limits to lower-body joints — upper body is
   # driven by motion playback, not the policy.
@@ -321,6 +322,8 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       r".*_ankle_roll_joint",
     )
   )
+  cfg.rewards["stand_still"].params["height_postures"] = height_postures
+  cfg.rewards["stand_still"].params["base_height_command_name"] = "base_height"
   cfg.rewards["joint_acc_l2"].params["asset_cfg"] = SceneEntityCfg(
     "robot", joint_names=(
       r".*_hip_pitch_joint",

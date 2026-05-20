@@ -74,6 +74,13 @@ def wrist_external_force(
     return torch.sign(force_b) * torch.log1p(torch.abs(force_b))
 
 
+def root_height(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  return asset.data.root_link_pos_w[:, 2:3]  # (num_envs, 1)
+
+
 def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Tensor:
     global_phase = (env.episode_length_buf * env.step_dt) % period / period
     phase = torch.zeros(env.num_envs, 2, device=env.device)
