@@ -100,7 +100,7 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 - **Clip playback** (`pose_only=False`): plays back motion clips frame-by-frame, wrapping cyclically.
 - **Pose only** (`pose_only=True`): samples a single random frame at reset and holds it for the full episode. Default during training.
 
-`default_pose_ratio` controls the fraction of envs holding HOME_KEYFRAME vs a motion-derived pose. A step-based curriculum (`default_pose_ratio_staged` in `curriculums.py`) can lower this ratio over training to gradually introduce more diverse poses.
+`default_pose_ratio` controls the fraction of envs holding HOME_KEYFRAME vs a motion-derived pose. A step-based curriculum (`default_pose_ratio_staged` in `curriculums.py`) lowers this ratio from 1.0 to 0.05 over training, keeping 5% of envs at the default pose as a baseline.
 
 ### Locomanipulation Force Curriculum
 
@@ -176,7 +176,7 @@ Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring
 
 `BaseHeightCommand` (`src/tasks/locomanipulation/mdp/height_command.py`) commands an absolute world-frame z-height for the robot root. The robot must maintain the specified height whether standing or walking.
 
-**Command:** `BaseHeightCommandCfg` with `ranges=(min_z, max_z)`, `nominal_height`, `max_deviation`, and `height_scale ∈ [0, 1]`. The sampling range is `(nominal - max_deviation * scale, nominal)`. Optional `fixed_height` overrides random sampling. Default range for G1: (0.5, 0.785) meters.
+**Command:** `BaseHeightCommandCfg` with `ranges=(min_z, max_z)`, `nominal_height`, `max_deviation`, `height_scale ∈ [0, 1]`, and `nominal_height_ratio`. The sampling range is `(nominal - max_deviation * scale, nominal)`. A fraction `nominal_height_ratio` of envs always command `nominal_height` (baseline episodes). Optional `fixed_height` overrides random sampling. Default range for G1: (0.5, 0.785) meters, `nominal_height_ratio=0.05`.
 
 **Curriculum:** `height_scale_staged` in `curriculums.py` — same step-based pattern as `force_scale_staged`. Ramps `height_scale` from 0.0 (nominal only) to 1.0 (full range) over training. Config: `cfg.curriculum["height_scale"]` in `config/g1/env_cfgs.py`. Play mode clears all curricula.
 

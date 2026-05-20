@@ -200,7 +200,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
         {"step": 4500 * 24, "ratio": 0.6},
         {"step": 7500 * 24, "ratio": 0.4},
         {"step": 11000 * 24, "ratio": 0.2},
-        {"step": 15000 * 24, "ratio": 0.0},
+        {"step": 15000 * 24, "ratio": 0.05},
       ],
     },
   )
@@ -218,6 +218,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       ],
     },
   )
+  cfg.commands["base_height"].nominal_height_ratio = 0.05
 
   # Rationale for std values:
   # - Knees/hip_pitch get the loosest std to allow natural leg bending during stride.

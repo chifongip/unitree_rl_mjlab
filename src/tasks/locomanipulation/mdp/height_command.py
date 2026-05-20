@@ -41,6 +41,9 @@ class BaseHeightCommand(CommandTerm):
         hi = self.cfg.nominal_height
         r = torch.empty(len(env_ids), device=self.device)
         self._height_command[env_ids, 0] = r.uniform_(lo, hi)
+        # Override: keep a fraction at nominal height.
+        nominal_mask = r.uniform_(0.0, 1.0) < self.cfg.nominal_height_ratio
+        self._height_command[env_ids[nominal_mask], 0] = self.cfg.nominal_height
 
     def _update_command(self) -> None:
         pass
@@ -59,6 +62,8 @@ class BaseHeightCommandCfg(CommandTermCfg):
     """Maximum downward deviation from nominal (meters). nominal - min(ranges)."""
     height_scale: float = 0.0
     """Curriculum scale in [0, 1]. 0 = nominal only, 1 = full range."""
+    nominal_height_ratio: float = 0.0
+    """Fraction of envs that always command nominal_height."""
 
     def build(self, env: ManagerBasedRlEnv) -> BaseHeightCommand:
         return BaseHeightCommand(self, env)
