@@ -3,7 +3,6 @@
 .vscode
 .claude
 **/__pycache__
-src/assets/data
 notes/
 tea_debug.log
 outputs

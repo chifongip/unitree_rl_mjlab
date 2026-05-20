@@ -7,6 +7,9 @@ INSTALL_REQUIRES = [
     "mjlab==1.2.0",
     "mujoco-warp==3.5.0",
     "mujoco==3.7.0",
+    "warp-lang==1.12.1",
+    "scipy",
+    "joblib",
 ]
 
 # Installation operation
