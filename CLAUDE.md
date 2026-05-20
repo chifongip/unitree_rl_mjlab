@@ -176,7 +176,9 @@ Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring
 
 `BaseHeightCommand` (`src/tasks/locomanipulation/mdp/height_command.py`) commands an absolute world-frame z-height for the robot root. The robot must maintain the specified height whether standing or walking.
 
-**Command:** `BaseHeightCommandCfg` with `ranges=(min_z, max_z)` and optional `fixed_height` for play mode. Default range for G1: (0.5, 0.785) meters.
+**Command:** `BaseHeightCommandCfg` with `ranges=(min_z, max_z)`, `nominal_height`, `max_deviation`, and `height_scale ∈ [0, 1]`. The sampling range is `(nominal - max_deviation * scale, nominal)`. Optional `fixed_height` overrides random sampling. Default range for G1: (0.5, 0.785) meters.
+
+**Curriculum:** `height_scale_staged` in `curriculums.py` — same step-based pattern as `force_scale_staged`. Ramps `height_scale` from 0.0 (nominal only) to 1.0 (full range) over training. Config: `cfg.curriculum["height_scale"]` in `config/g1/env_cfgs.py`. Play mode clears all curricula.
 
 **Reward:** `track_base_height` in `rewards.py` — Gaussian kernel `exp(-(cmd_z - actual_z)^2 / std^2)` with `std = sqrt(0.05)`.
 
