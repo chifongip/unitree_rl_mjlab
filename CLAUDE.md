@@ -118,6 +118,28 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 
 **Config:** `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]` in `config/g1/env_cfgs.py`. Play mode removes `hand_force`.
 
+### Locomanipulation Max Force Estimation
+
+`MaxForceEstimator` (`src/tasks/locomanipulation/mdp/events.py`) computes per-EE force bounds dynamically using the Jacobian transpose relationship `τ = J^T · F`. This ensures external forces are physically plausible for the current arm configuration.
+
+**Algorithm** (ported from FALCON `_calculate_max_ee_forces()`):
+1. Compute translational Jacobian for each wrist body via `mjwarp.jac()`
+2. Slice columns for constraint DOFs (configurable via `constraint_joint_names`)
+3. Compute per-joint, per-axis force limits: `F_max[axis, i] = effort_limit[i] / (|J[axis, i]| + ε)`
+4. Take most restrictive across joints: `F_max[axis] = min_i(F_max[axis, i])`
+5. Clip to hard bounds (`force_range_max`) and scale by `force_scale` curriculum
+6. Apply per-env Dirichlet `force_xyz_scale` for axis-wise diversity
+
+**Config params** in `cfg.events["hand_force"]`:
+- `max_force_estimation: True` — enable Jacobian-based bounds
+- `constraint_joint_names`: tuple of regex patterns for joints to include in the constraint (default: arms only, 7 per side)
+
+**Example force bounds** (G1, arms-only constraint, `eps=1e-2`):
+- All joints at 0: x=±118N, y=±119N, z=±124N
+- HOME_KEYFRAME (bent elbows): x=±66N, y=±75N, z=±318N
+
+**Tests:** `tests/test_max_force_estimator.py` — 5 mock tests + 1 integration test with real G1 MuJoCo model. Run with `python -c "import sys; sys.path.insert(0,'.'); from tests.test_max_force_estimator import *; [t() for t in [test_single_joint_force_bounds, test_multiple_joints_most_restrictive_wins, test_symmetric_effort_gives_symmetric_bounds, test_two_end_effectors_independent, test_zero_jacobian_gives_large_finite_bound]]"` (pytest has ROS plugin conflicts).
+
 ### Locomanipulation Play-Mode Testing
 
 Three config options enable controlled model comparison in play mode:
@@ -173,4 +195,8 @@ Both `train.py` and `play.py` use [tyro](https://github.com/brentyi/tyro) for CL
 - Training: `MjlabOnPolicyRunner`, `RslRlVecEnvWrapper` from `mjlab.rl`
 
 ## Testing / Linting
-No CI or linting configuration exists. Mock tests in `tests/test_symmetry.py` verify symmetry augmentation correctness. Run with `python tests/test_symmetry.py` (pytest has ROS plugin conflicts).
+No CI or linting configuration exists. Mock tests verify correctness:
+- `tests/test_symmetry.py` — symmetry augmentation (joint swaps, sign flips, batch doubling). Run with `python tests/test_symmetry.py`.
+- `tests/test_max_force_estimator.py` — Jacobian-based force estimation (mock + G1 integration). Run with `python -c "import sys; sys.path.insert(0,'.'); from tests.test_max_force_estimator import *; [t() for t in [test_single_joint_force_bounds, test_multiple_joints_most_restrictive_wins, test_symmetric_effort_gives_symmetric_bounds, test_two_end_effectors_independent, test_zero_jacobian_gives_large_finite_bound]]"`.
+
+pytest has ROS plugin conflicts — run tests directly or use `python -m pytest -p no:launch_testing`.

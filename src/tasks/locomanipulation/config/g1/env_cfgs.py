@@ -132,14 +132,15 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
 
   # External force on hands for carrying-heavy-object training.
   # In play mode, no external force is applied.
+  # Jacobian-based max force estimation ensures forces are physically plausible.
   cfg.events["hand_force"] = EventTermCfg(
     func=HandForceEvent,
     mode="step",
     params={
       "force_range_max": {
-        "x": (-15.0, 15.0),
-        "y": (-15.0, 15.0),
-        "z": (-30.0, 5.0),
+        "x": (-40.0, 40.0),
+        "y": (-40.0, 40.0),
+        "z": (-50.0, 5.0),
       },
       "force_scale": 0.0,
       "torque_range": (0.0, 0.0),
@@ -159,6 +160,19 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       "asset_cfg": SceneEntityCfg(
         "robot",
         body_names=("left_wrist_yaw_link", "right_wrist_yaw_link"),
+      ),
+      "max_force_estimation": True,
+      "constraint_joint_names": (
+        ".*_shoulder_pitch_joint",
+        ".*_shoulder_roll_joint",
+        ".*_shoulder_yaw_joint",
+        ".*_elbow_joint",
+        ".*_wrist_roll_joint",
+        ".*_wrist_pitch_joint",
+        ".*_wrist_yaw_joint",
+        # "waist_yaw_joint",                                                                                                                                               
+        # "waist_roll_joint",                                                                                                                                              
+        # "waist_pitch_joint",
       ),
     },
   )
