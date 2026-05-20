@@ -25,6 +25,7 @@ from mjlab.sensor import GridPatternCfg, ObjRef, RayCastSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
+from src.tasks.locomanipulation.mdp.height_command import BaseHeightCommandCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
@@ -68,6 +69,10 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
     "command": ObservationTermCfg(
       func=mdp.generated_commands,
       params={"command_name": "twist"},
+    ),
+    "base_height_command": ObservationTermCfg(
+      func=mdp.generated_commands,
+      params={"command_name": "base_height"},
     ),
     "phase": ObservationTermCfg(
       func=mdp.phase,
@@ -182,7 +187,13 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         ang_vel_z=(-1.0, 1.0),
         heading=(-math.pi, math.pi),
       ),
-    )
+    ),
+    "base_height": BaseHeightCommandCfg(
+      entity_name="robot",
+      resampling_time_range=(3.0, 8.0),
+      ranges=(0.5, 0.785),
+      debug_vis=True,
+    ),
   }
 
   ##
@@ -270,6 +281,11 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       weight=1.0,
       params={"command_name": "twist", "std": math.sqrt(0.25)},
     ),
+    "track_base_height": RewardTermCfg(
+      func=mdp.track_base_height,
+      weight=1.0,
+      params={"command_name": "base_height", "std": math.sqrt(0.05)},
+    ),
     "track_angular_velocity": RewardTermCfg(
       func=mdp.track_angular_velocity,
       weight=1.0,
@@ -291,6 +307,9 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "std_running": {},  # Set per-robot.
         "walking_threshold": 0.1,
         "running_threshold": 1.5,
+        "base_height_command_name": "base_height",
+        "height_postures": None,  # Set per-robot.
+        "nominal_height": 0.785,
       },
     ),
     "body_ang_vel": RewardTermCfg(

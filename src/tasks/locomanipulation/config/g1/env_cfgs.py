@@ -249,6 +249,50 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
   }
+  cfg.rewards["pose"].params["height_postures"] = {
+    0.5: {
+      "left_hip_pitch_joint": -1.055, "left_hip_roll_joint": 0.0001, "left_hip_yaw_joint": -0.0,
+      "left_knee_joint": 1.949, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": -0.0001,
+      "right_hip_pitch_joint": -1.055, "right_hip_roll_joint": -0.0001, "right_hip_yaw_joint": 0.0,
+      "right_knee_joint": 1.949, "right_ankle_pitch_joint": -0.8727, "right_ankle_roll_joint": 0.0,
+    },
+    0.55: {
+      "left_hip_pitch_joint": -0.8771, "left_hip_roll_joint": 0.0001, "left_hip_yaw_joint": -0.0,
+      "left_knee_joint": 1.7667, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": -0.0001,
+      "right_hip_pitch_joint": -0.8771, "right_hip_roll_joint": -0.0, "right_hip_yaw_joint": 0.0,
+      "right_knee_joint": 1.7667, "right_ankle_pitch_joint": -0.8727, "right_ankle_roll_joint": 0.0,
+    },
+    0.6: {
+      "left_hip_pitch_joint": -0.6721, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": -0.0,
+      "left_knee_joint": 1.5523, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": -0.0,
+      "right_hip_pitch_joint": -0.6721, "right_hip_roll_joint": -0.0, "right_hip_yaw_joint": 0.0,
+      "right_knee_joint": 1.5523, "right_ankle_pitch_joint": -0.8727, "right_ankle_roll_joint": 0.0,
+    },
+    0.65: {
+      "left_hip_pitch_joint": -0.509, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": -0.0,
+      "left_knee_joint": 1.3006, "left_ankle_pitch_joint": -0.7916, "left_ankle_roll_joint": 0.0,
+      "right_hip_pitch_joint": -0.509, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": -0.0,
+      "right_knee_joint": 1.3006, "right_ankle_pitch_joint": -0.7916, "right_ankle_roll_joint": 0.0,
+    },
+    0.7: {
+      "left_hip_pitch_joint": -0.3858, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": -0.0,
+      "left_knee_joint": 1.0131, "left_ankle_pitch_joint": -0.6273, "left_ankle_roll_joint": 0.0,
+      "right_hip_pitch_joint": -0.3858, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": -0.0,
+      "right_knee_joint": 1.0131, "right_ankle_pitch_joint": -0.6273, "right_ankle_roll_joint": 0.0,
+    },
+    0.75: {
+      "left_hip_pitch_joint": -0.2081, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": -0.0,
+      "left_knee_joint": 0.6159, "left_ankle_pitch_joint": -0.4078, "left_ankle_roll_joint": 0.0,
+      "right_hip_pitch_joint": -0.2081, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": -0.0,
+      "right_knee_joint": 0.6159, "right_ankle_pitch_joint": -0.4078, "right_ankle_roll_joint": 0.0,
+    },
+    0.785: {
+      "left_hip_pitch_joint": 0.0142, "left_hip_roll_joint": -0.0003, "left_hip_yaw_joint": 0.0001,
+      "left_knee_joint": 0.0448, "left_ankle_pitch_joint": -0.0372, "left_ankle_roll_joint": 0.0008,
+      "right_hip_pitch_joint": 0.0142, "right_hip_roll_joint": 0.0003, "right_hip_yaw_joint": -0.0001,
+      "right_knee_joint": 0.0448, "right_ankle_pitch_joint": -0.0372, "right_ankle_roll_joint": -0.0004,
+    },
+  }
 
   # Restrict stand_still, joint_acc_l2 and joint_pos_limits to lower-body joints — upper body is
   # driven by motion playback, not the policy.
@@ -334,6 +378,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     }
     cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
     cfg.commands["twist"].fixed_command = (1.0, 0.0, 0.0)
+    cfg.commands["base_height"].fixed_height = 0.785
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
