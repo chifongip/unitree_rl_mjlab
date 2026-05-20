@@ -37,6 +37,11 @@ class DefaultPoseRatioStage(TypedDict):
   ratio: float
 
 
+class HeightScaleStage(TypedDict):
+  step: int
+  scale: float
+
+
 def terrain_levels_vel(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -185,3 +190,19 @@ def force_curriculum_adaptive(
 
   event_cfg.params["force_scale"] = new_scale
   return torch.tensor([new_scale])
+
+
+def height_scale_staged(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | slice | None,
+  command_name: str,
+  stages: list[HeightScaleStage],
+) -> torch.Tensor:
+  """Set height_scale based on training step thresholds."""
+  del env_ids
+  command_term = env.command_manager.get_term(command_name)
+  cfg = command_term.cfg
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      cfg.height_scale = stage["scale"]
+  return torch.tensor([cfg.height_scale])

@@ -204,6 +204,20 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       ],
     },
   )
+  cfg.curriculum["height_scale"] = CurriculumTermCfg(
+    func=mdp.height_scale_staged,
+    params={
+      "command_name": "base_height",
+      "stages": [
+        {"step": 0, "scale": 0.0},
+        {"step": 2000 * 24, "scale": 0.2},
+        {"step": 4500 * 24, "scale": 0.4},
+        {"step": 7500 * 24, "scale": 0.6},
+        {"step": 11000 * 24, "scale": 0.8},
+        {"step": 15000 * 24, "scale": 1.0},
+      ],
+    },
+  )
 
   # Rationale for std values:
   # - Knees/hip_pitch get the loosest std to allow natural leg bending during stride.

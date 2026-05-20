@@ -37,8 +37,10 @@ class BaseHeightCommand(CommandTerm):
         if self.cfg.fixed_height is not None:
             self._height_command[env_ids, 0] = self.cfg.fixed_height
             return
+        lo = self.cfg.nominal_height - self.cfg.max_deviation * self.cfg.height_scale
+        hi = self.cfg.nominal_height
         r = torch.empty(len(env_ids), device=self.device)
-        self._height_command[env_ids, 0] = r.uniform_(*self.cfg.ranges)
+        self._height_command[env_ids, 0] = r.uniform_(lo, hi)
 
     def _update_command(self) -> None:
         pass
@@ -51,6 +53,12 @@ class BaseHeightCommandCfg(CommandTermCfg):
     """Min/max absolute commanded height in world frame (meters)."""
     fixed_height: float | None = None
     """If set, always command this height instead of random sampling."""
+    nominal_height: float = 0.785
+    """Nominal standing height (meters). The upper bound of the sampling range."""
+    max_deviation: float = 0.285
+    """Maximum downward deviation from nominal (meters). nominal - min(ranges)."""
+    height_scale: float = 0.0
+    """Curriculum scale in [0, 1]. 0 = nominal only, 1 = full range."""
 
     def build(self, env: ManagerBasedRlEnv) -> BaseHeightCommand:
         return BaseHeightCommand(self, env)

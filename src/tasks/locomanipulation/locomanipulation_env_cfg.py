@@ -192,6 +192,9 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       entity_name="robot",
       resampling_time_range=(3.0, 8.0),
       ranges=(0.5, 0.785),
+      nominal_height=0.785,
+      max_deviation=0.285,
+      height_scale=0.0,
       debug_vis=True,
     ),
   }
