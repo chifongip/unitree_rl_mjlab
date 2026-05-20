@@ -44,6 +44,7 @@ def track_angular_velocity(
   env: ManagerBasedRlEnv,
   std: float,
   command_name: str,
+  ang_vel_xy_weight: float = 0.05,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
   """Reward heading error for heading-controlled envs, angular velocity for others.
@@ -56,7 +57,7 @@ def track_angular_velocity(
   actual = asset.data.root_link_ang_vel_b
   z_error = torch.square(command[:, 2] - actual[:, 2])
   xy_error = torch.sum(torch.square(actual[:, :2]), dim=1)
-  ang_vel_error = z_error + (0.05 * xy_error)
+  ang_vel_error = z_error + (ang_vel_xy_weight * xy_error)
   return torch.exp(-ang_vel_error / std**2)
 
 

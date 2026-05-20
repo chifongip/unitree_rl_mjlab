@@ -1,5 +1,6 @@
 """Unitree G1 locomanipulation environment configurations."""
 
+import math
 import re
 
 from src.assets.robots import get_g1_robot_cfg
@@ -220,6 +221,13 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   )
   cfg.commands["base_height"].nominal_height_ratio = 0.05
 
+  # Tighten angular velocity tracking reward for low-speed rotation.
+  cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.05)
+  cfg.rewards["track_angular_velocity"].params["ang_vel_xy_weight"] = 0.1
+  # Lower stand_still threshold so pure rotation commands (0.05–0.1 rad/s) are
+  # not penalized as standing still.
+  cfg.rewards["stand_still"].params["command_threshold"] = 0.05
+
   # Rationale for std values:
   # - Knees/hip_pitch get the loosest std to allow natural leg bending during stride.
   # - Hip roll/yaw stay tighter to prevent excessive lateral sway and keep gait stable.
@@ -243,7 +251,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.rewards["pose"].params["std_standing"] = {
     r".*hip_pitch.*": 0.05,
     r".*hip_roll.*": 0.05,
-    r".*hip_yaw.*": 0.05,
+    r".*hip_yaw.*": 0.08,
     r".*knee.*": 0.05,
     r".*ankle_pitch.*": 0.05,
     r".*ankle_roll.*": 0.05,
@@ -251,7 +259,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.rewards["pose"].params["std_walking"] = {
     r".*hip_pitch.*": 0.5,
     r".*hip_roll.*": 0.15,
-    r".*hip_yaw.*": 0.15,
+    r".*hip_yaw.*": 0.25,
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.15,
     r".*ankle_roll.*": 0.1,
@@ -259,7 +267,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.rewards["pose"].params["std_running"] = {
     r".*hip_pitch.*": 0.5,
     r".*hip_roll.*": 0.25,
-    r".*hip_yaw.*": 0.25,
+    r".*hip_yaw.*": 0.35,
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,

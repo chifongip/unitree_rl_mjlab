@@ -172,6 +172,28 @@ Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring
 
 **Tests**: `tests/test_symmetry.py` — 25 mock tests covering joint swaps, sign flips, per-term mirror rules, batch doubling, and double-mirror identity.
 
+### Locomanipulation Angular Velocity Tuning
+
+The G1 locomanipulation policy controls only 12 lower-body joints; upper body is motion-playback controlled. Only `hip_yaw` joints (Z-axis) can produce yaw rotation via differential actuation. This makes low-speed in-place rotation mechanically difficult.
+
+**Key tuning in `config/g1/env_cfgs.py`:**
+- `track_angular_velocity` std: `sqrt(0.05)` (tightened from base `sqrt(0.5)` to steepen the reward gradient for small errors)
+- `ang_vel_xy_weight`: 0.1 (up from default 0.05, penalizes roll/pitch angular velocity during turning)
+- `stand_still` command_threshold: 0.05 (lowered from 0.1 so rotation commands 0.05–0.1 rad/s aren't penalized as standing)
+- Pose reward hip_yaw std: standing=0.08, walking=0.25, running=0.35 (relaxed from 0.05/0.15/0.25 to allow differential hip_yaw for turning)
+
+**Reward landscape comparison** (std=0.224 vs old std=0.707):
+| Error (rad/s) | Old reward | New reward |
+|---|---|---|
+| 0.1 | 0.980 | 0.819 |
+| 0.2 | 0.923 | 0.449 |
+| 0.3 | 0.839 | 0.169 |
+
+**Play-mode testing:**
+```bash
+python scripts/play.py Unitree-G1-Locomanipulation-Flat --checkpoint_file=<path> --env.commands.twist.fixed_command='(0.0,0.0,0.3)'
+```
+
 ### Locomanipulation Base Height Command
 
 `BaseHeightCommand` (`src/tasks/locomanipulation/mdp/height_command.py`) commands an absolute world-frame z-height for the robot root. The robot must maintain the specified height whether standing or walking.
@@ -182,9 +204,11 @@ Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring
 
 **Reward:** `track_base_height` in `rewards.py` — Gaussian kernel `exp(-(cmd_z - actual_z)^2 / std^2)` with `std = sqrt(0.05)`.
 
-**Observation:** `base_height_command` in both actor and critic groups, exposed via `generated_commands` with `command_name="base_height"`. Shape: `[num_envs, 1]`.
+**Observation:** `base_height_command` in both actor and critic groups, exposed via `generated_commands` with `command_name="base_height"`. Shape: `[num_envs, 1]`. Additionally, `root_height` (actual z-position) is in the **critic only** as privileged info via `mdp.root_height` in `observations.py`.
 
 **Height-dependent posture:** `variable_posture` reward accepts `base_height_command_name` and `height_postures` params. When set, the desired posture is looked up from a `{height: {joint_name: radians}}` table based on the commanded height, instead of using the fixed `default_joint_pos`. This ensures the pose reference adapts (e.g., bent knees when crouching).
+
+**Height-aware stand_still:** `stand_still` is a class (not a plain function) that accepts the same `height_postures` and `base_height_command_name` params. When set, the target posture is looked up from the height table based on commanded height, rather than always using `default_joint_pos`. This prevents `stand_still` from fighting the crouched posture needed for lower heights. Without height_postures, falls back to `default_joint_pos` (backward compatible).
 
 **Height posture table (G1):** 7 entries from 0.50m to 0.785m at 0.05m intervals. Computed offline via `scripts/compute_height_postures.py` (IK solver using MuJoCo forward kinematics + scipy optimization). The script constrains foot capsule geoms to ground (z=0), pelvis above foot centroid, and legs in the sagittal plane. Run with `--show` to visualize in MuJoCo viewer.
 
