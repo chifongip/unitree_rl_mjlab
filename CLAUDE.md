@@ -217,6 +217,29 @@ The G1 locomanipulation policy controls only 12 lower-body joints; upper body is
 python scripts/play.py Unitree-G1-Locomanipulation-Flat --checkpoint_file=<path> --env.commands.twist.fixed_command='(0.0,0.0,0.3)'
 ```
 
+### Locomanipulation Walk-to-Stand Transition Smoothing
+
+The policy exhibited instability when transitioning from walking to standing: forward lean on sudden stops, body sway, and amplified instability under external forces. Root causes and fixes:
+
+**Root causes:**
+- **10x reward discontinuity**: `variable_posture` used hard masks to switch std between standing (0.05) and walking (0.5) at 0.1 m/s. This created a cliff in the reward landscape during deceleration.
+- **Instantaneous command zeroing**: `_update_command` set velocity to exactly zero in one step for standing envs. No deceleration ramp.
+- **Resample spike**: `_resample_command` overwrote `vel_command_b` with random values even for standing envs, which the decay then fought against.
+
+**Fix 1 — Sigmoid blend in `variable_posture`** (`rewards.py:433-447`): Replaced hard standing/walking/running masks with sigmoid blends. `blend_scale` (default 30.0, configurable via config params) gives a ~0.13 m/s transition zone centered at `walking_threshold=0.1`. Speed below ~0.03 m/s is fully standing, above ~0.17 m/s fully walking, with smooth interpolation between.
+
+Formula: `std = std_standing * (1-α_s) + std_walking * α_s`, where `α_s = σ((speed - threshold) * blend_scale)`. Same pattern for walking→running boundary.
+
+**Fix 2 — Exponential command decay** (`velocity_command.py:117-147`): Added `_stand_decay_active` tracker (init at line 45). When an env becomes standing, instead of zeroing instantly, the command decays via `vel *= 0.98` each step (~1s time constant at 50Hz). Snaps to zero when `|cmd| < 0.01`. Decay state auto-clears when envs leave standing mode. Skips activation for envs whose command is already zero to avoid oscillating `_stand_decay_active`.
+
+**Fix 3 — Preserve pre-resample velocity** (`velocity_command.py:81-100`): `_resample_command` saves `old_vel` before overwriting, then restores it for envs selected as standing. This ensures standing envs decay from whatever they were actually tracking, not a random new command.
+
+**Parameter guidance:**
+- `decay = exp(-dt / τ)` where `dt = 0.02s` (4× decimation × 0.005s physics). τ = 1.0s → decay = 0.980. Match τ to the robot's physical deceleration capability.
+- `blend_scale`: transition width ≈ 4/k. k=30 → 0.13 m/s blend zone. Wider (k=20) = smoother but less precise regime separation. Narrower (k=50) = sharper, closer to original behavior. Configurable via `cfg.rewards["pose"].params["blend_scale"]`.
+
+**Verification:** Short training run (5 iterations, 64 envs) — no NaN, stable losses, all 17 reward terms reporting normally.
+
 ### Locomanipulation Base Height Command
 
 `BaseHeightCommand` (`src/tasks/locomanipulation/mdp/height_command.py`) commands an absolute world-frame z-height for the robot root. The robot must maintain the specified height whether standing or walking.

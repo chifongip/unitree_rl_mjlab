@@ -347,10 +347,11 @@ class variable_posture:
   from default pose. Smaller std = stricter (less deviation allowed), larger
   std = more forgiving. The reward is: exp(-mean(error² / std²))
 
-  Three speed regimes (based on linear + angular command velocity):
-    - std_standing (speed < walking_threshold): Tight tolerance for holding pose.
-    - std_walking (walking_threshold <= speed < running_threshold): Moderate.
-    - std_running (speed >= running_threshold): Loose tolerance for large motion.
+  Speed regimes are blended with sigmoids to avoid reward cliffs:
+    - std_standing dominates at low speed (below walking_threshold).
+    - std_walking at moderate speed.
+    - std_running at high speed (above running_threshold).
+  blend_scale controls transition sharpness (width ≈ 4/blend_scale).
 
   Optionally supports height-dependent postures via height_postures dict.
   When base_height_command_name is set, the desired posture is looked up from
@@ -415,6 +416,7 @@ class variable_posture:
     command_name: str,
     walking_threshold: float = 0.5,
     running_threshold: float = 1.5,
+    blend_scale: float = 30.0,
     base_height_command_name: str | None = None,
     height_postures: dict | None = None,
     nominal_height: float = 0.785,
@@ -430,16 +432,19 @@ class variable_posture:
     angular_speed = torch.abs(command[:, 2])
     total_speed = linear_speed + angular_speed
 
-    standing_mask = (total_speed < walking_threshold).float()
-    walking_mask = (
-      (total_speed >= walking_threshold) & (total_speed < running_threshold)
-    ).float()
-    running_mask = (total_speed >= running_threshold).float()
+    # Sigmoid blend between speed regimes to avoid a reward cliff at the boundary.
+    # alpha_s: 0 = fully standing, 1 = fully walking.
+    # alpha_r: 0 = fully walking, 1 = fully running.
+    alpha_s = torch.sigmoid((total_speed - walking_threshold) * blend_scale)
+    alpha_r = torch.sigmoid((total_speed - running_threshold) * blend_scale)
 
+    std_walk = (
+      self.std_standing * (1 - alpha_s).unsqueeze(1)
+      + self.std_walking * alpha_s.unsqueeze(1)
+    )
     std = (
-      self.std_standing * standing_mask.unsqueeze(1)
-      + self.std_walking * walking_mask.unsqueeze(1)
-      + self.std_running * running_mask.unsqueeze(1)
+      std_walk * (1 - alpha_r).unsqueeze(1)
+      + self.std_running * alpha_r.unsqueeze(1)
     )
 
     current_joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]

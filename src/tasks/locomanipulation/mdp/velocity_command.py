@@ -42,6 +42,7 @@ class UniformVelocityCommand(CommandTerm):
       self.num_envs, dtype=torch.bool, device=self.device
     )
     self.is_standing_env = torch.zeros_like(self.is_heading_env)
+    self._stand_decay_active = torch.zeros_like(self.is_heading_env)
 
     self.metrics["error_vel_xy"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["error_vel_yaw"] = torch.zeros(self.num_envs, device=self.device)
@@ -77,6 +78,10 @@ class UniformVelocityCommand(CommandTerm):
       self.is_standing_env[env_ids] = False
       return
 
+    # Save pre-resample velocity so standing envs keep their current command
+    # and decay smoothly, instead of getting a random spike at each resample.
+    old_vel = self.vel_command_b[env_ids].clone()
+
     r = torch.empty(len(env_ids), device=self.device)
     self.vel_command_b[env_ids, 0] = r.uniform_(*self.cfg.ranges.lin_vel_x)
     self.vel_command_b[env_ids, 1] = r.uniform_(*self.cfg.ranges.lin_vel_y)
@@ -87,6 +92,12 @@ class UniformVelocityCommand(CommandTerm):
       self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
       self.is_heading_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_heading_envs
     self.is_standing_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_standing_envs
+
+    # Restore pre-resample velocity for standing envs so they decay from
+    # whatever they were actually tracking, not a random new command.
+    standing_mask = self.is_standing_env[env_ids]
+    if standing_mask.any():
+      self.vel_command_b[env_ids[standing_mask]] = old_vel[standing_mask]
 
     init_vel_mask = r.uniform_(0.0, 1.0) < self.cfg.init_velocity_prob
     init_vel_env_ids = env_ids[init_vel_mask]
@@ -112,8 +123,28 @@ class UniformVelocityCommand(CommandTerm):
         min=self.cfg.ranges.ang_vel_z[0],
         max=self.cfg.ranges.ang_vel_z[1],
       )
+    # Ramp standing commands toward zero with exponential decay (~1s time constant at 50Hz)
+    # instead of instantaneous zeroing, so the policy learns smooth deceleration.
     standing_env_ids = self.is_standing_env.nonzero(as_tuple=False).flatten()
-    self.vel_command_b[standing_env_ids, :] = 0.0
+    if len(standing_env_ids) > 0:
+      # Only activate decay for envs with non-zero command to avoid
+      # oscillating _stand_decay_active True→False each step.
+      nonzero = standing_env_ids[torch.norm(self.vel_command_b[standing_env_ids], dim=-1) > 0.01]
+      self._stand_decay_active[nonzero] = True
+
+    active = self._stand_decay_active.nonzero(as_tuple=False).flatten()
+    if len(active) > 0:
+      decay = 0.98
+      self.vel_command_b[active] *= decay
+      # Snap to zero once small enough, then mark inactive.
+      small = active[torch.norm(self.vel_command_b[active], dim=-1) < 0.01]
+      if len(small) > 0:
+        self.vel_command_b[small] = 0.0
+        self._stand_decay_active[small] = False
+
+    # Clear decay state for envs that are no longer standing.
+    no_longer_standing = (~self.is_standing_env) & self._stand_decay_active
+    self._stand_decay_active[no_longer_standing] = False
 
   # GUI.
 
@@ -155,7 +186,7 @@ class UniformVelocityCommand(CommandTerm):
         )
 
         @max_input.on_update
-        def _(_ev, _s=slider, _m=max_input) -> None:
+        def _(_, _s=slider, _m=max_input) -> None:
           _s.min = -_m.value
           _s.max = _m.value
 
