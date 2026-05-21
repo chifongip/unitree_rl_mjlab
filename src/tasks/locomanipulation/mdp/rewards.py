@@ -135,6 +135,22 @@ def body_angular_velocity_penalty(
   return torch.sum(torch.square(ang_vel_xy), dim=1)
 
 
+def base_lin_vel_penalty(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize horizontal base velocity when standing still."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  is_standing = (total_command < 0.1).float()
+  base_vel_xy = asset.data.root_link_lin_vel_b[:, :2]
+  penalty = torch.sum(torch.square(base_vel_xy), dim=1)
+  return penalty * is_standing
+
+
 def angular_momentum_penalty(
   env: ManagerBasedRlEnv,
   sensor_name: str,
