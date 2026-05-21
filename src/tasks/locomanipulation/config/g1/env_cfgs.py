@@ -318,8 +318,8 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   }
   cfg.rewards["pose"].params["height_postures"] = height_postures
 
-  # Restrict stand_still, joint_acc_l2 and joint_pos_limits to lower-body joints — upper body is
-  # driven by motion playback, not the policy.
+  # Restrict stand_still, joint_acc_l2, joint_pos_limits and leg_joint_vel_penalty to
+  # lower-body joints — upper body is driven by motion playback, not the policy.
   cfg.rewards["stand_still"].params["asset_cfg"] = SceneEntityCfg(
     "robot", joint_names=(
       r".*_hip_pitch_joint",
@@ -343,6 +343,16 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     )
   )
   cfg.rewards["joint_pos_limits"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(
+      r".*_hip_pitch_joint",
+      r".*_hip_roll_joint",
+      r".*_hip_yaw_joint",
+      r".*_knee_joint",
+      r".*_ankle_pitch_joint",
+      r".*_ankle_roll_joint",
+    )
+  )
+  cfg.rewards["leg_joint_vel_penalty"].params["asset_cfg"] = SceneEntityCfg(
     "robot", joint_names=(
       r".*_hip_pitch_joint",
       r".*_hip_roll_joint",

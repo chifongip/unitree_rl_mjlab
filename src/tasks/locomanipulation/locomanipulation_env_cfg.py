@@ -329,6 +329,11 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       weight=-0.025,  # Override per-robot
       params={"sensor_name": "robot/root_angmom"},
     ),
+    "leg_joint_vel_penalty": RewardTermCfg(
+      func=mdp.leg_joint_vel_penalty,
+      weight=-1.0e-3,
+      params={"command_name": "twist"},
+    ),
     "is_terminated": RewardTermCfg(func=mdp.is_terminated, weight=-200.0),
     "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-2.5e-7),
     "joint_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-10.0),

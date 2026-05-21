@@ -135,6 +135,26 @@ def body_angular_velocity_penalty(
   return torch.sum(torch.square(ang_vel_xy), dim=1)
 
 
+def leg_joint_vel_penalty(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize lower-body joint velocities when standing still.
+
+  Acts as a damper on corrective leg motions to prevent self-excited
+  oscillations during walk-to-stand transitions.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  is_standing = (total_command < 0.1).float()
+  joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  penalty = torch.sum(torch.square(joint_vel), dim=1)
+  return penalty * is_standing
+
+
 def angular_momentum_penalty(
   env: ManagerBasedRlEnv,
   sensor_name: str,
