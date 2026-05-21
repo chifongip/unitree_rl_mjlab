@@ -218,6 +218,12 @@ def _get_term_mirror(term_name: str) -> _TermMirror | None:
   if term_name == "height_scan":
     return None  # Handled separately if rough terrain is active.
 
+  # Base height terms — no mirroring (pseudovector with z-up convention, so sign doesn't flip).
+  if term_name == "base_height_command":
+    return None
+  if term_name == "base_height":
+    return None
+
   # Unknown term — no mirroring (safe default).
   return None
 
