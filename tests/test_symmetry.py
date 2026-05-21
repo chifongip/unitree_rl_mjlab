@@ -34,8 +34,9 @@ class _MockTermCfg:
 
 
 class _MockGroupCfg:
-  def __init__(self, terms: dict[str, _MockTermCfg]):
+  def __init__(self, terms: dict[str, _MockTermCfg], history_length: int = 1):
     self.terms = OrderedDict(terms)
+    self.history_length = history_length
 
 
 class _MockObsManager:
@@ -394,3 +395,177 @@ class TestAugmentationFunction:
     for key in obs.keys():
       assert torch.allclose(aug_obs2[key][:batch], obs[key], atol=1e-6)
     assert torch.allclose(aug_actions2[:batch], actions, atol=1e-6)
+
+
+# ── Tests: History-aware mirroring (history_length > 1) ─────────────────────
+
+_HISTORY_LEN = 4
+
+
+def _make_mock_env_with_history() -> _MockEnv:
+  """Mock env where observation groups have history_length=4."""
+  actor_cfg = _MockGroupCfg(
+    {t: _MockTermCfg() for t in _ACTOR_TERMS}, history_length=_HISTORY_LEN
+  )
+  critic_cfg = _MockGroupCfg(
+    {t: _MockTermCfg() for t in _CRITIC_TERMS}, history_length=_HISTORY_LEN
+  )
+  # _group_obs_term_dim stores (history * feature_dim,) per term.
+  obs_mgr = _MockObsManager(
+    group_term_names={"actor": list(_ACTOR_TERMS), "critic": list(_CRITIC_TERMS)},
+    group_term_dims={
+      "actor": [d * _HISTORY_LEN for d in _ACTOR_DIMS],
+      "critic": [d * _HISTORY_LEN for d in _CRITIC_DIMS],
+    },
+    group_cfgs={"actor": actor_cfg, "critic": critic_cfg},
+  )
+  return _MockEnv(obs_mgr)
+
+
+def _make_symmetry_with_history() -> G1Symmetry:
+  return G1Symmetry(_make_mock_env_with_history())
+
+
+class TestHistoryNegateIndices:
+  def test_negate_all_frames(self):
+    """_NegateIndices should negate the same feature index in every history frame."""
+    m = _NegateIndices((0, 2))
+    # 3-dim feature, 4 history frames → 12 elements.
+    x = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]], dtype=torch.float)
+    m.apply(x, None, history_length=4)
+    # Frames: [1,2,3] [4,5,6] [7,8,9] [10,11,12]
+    # Negate idx 0,2 in each frame: [-1,2,-3] [-4,5,-6] [-7,8,-9] [-10,11,-12]
+    expected = torch.tensor([[-1, 2, -3, -4, 5, -6, -7, 8, -9, -10, 11, -12]], dtype=torch.float)
+    assert torch.allclose(x, expected)
+
+  def test_history_length_1_backward_compat(self):
+    """With history_length=1, behavior should be identical to the original."""
+    m = _NegateIndices((0, 2))
+    x = torch.tensor([[1.0, 2.0, 3.0]])
+    m.apply(x, None, history_length=1)
+    assert torch.allclose(x, torch.tensor([[-1.0, 2.0, -3.0]]))
+
+
+class TestHistorySwapAndFlipJoints:
+  def test_swap_all_frames(self):
+    """Joint swap+flip should apply independently to each history frame."""
+    n = 6  # 3 left + 3 right joints
+    partners = {0: 3, 1: 4, 2: 5, 3: 0, 4: 1, 5: 2}
+    flip = {1, 4}  # roll joints
+    m = _SwapAndFlipJoints(n, partners, flip)
+
+    # 2 history frames, 6 joints each.
+    # Frame 0: left=[10,20,30], right=[40,50,60]
+    # Frame 1: left=[70,80,90], right=[100,110,120]
+    x = torch.tensor([[10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]], dtype=torch.float)
+    m.apply(x, None, history_length=2)
+
+    # Frame 0: swap L↔R, negate roll(idx 1,4):
+    #   [40, -50, 60, 10, -20, 30]
+    # Frame 1: swap L↔R, negate roll(idx 1,4):
+    #   [100, -110, 120, 70, -80, 90]
+    expected = torch.tensor(
+      [[40, -50, 60, 10, -20, 30, 100, -110, 120, 70, -80, 90]], dtype=torch.float
+    )
+    assert torch.allclose(x, expected)
+
+  def test_double_mirror_identity_with_history(self):
+    """Double mirror should be identity with history > 1."""
+    m = _SwapAndFlipJoints(29, _JOINT_SWAP_PARTNERS, _SIGN_FLIP_JOINTS)
+    x = torch.randn(4, 29 * _HISTORY_LEN)
+    orig = x.clone()
+    m.apply(x, None, history_length=_HISTORY_LEN)
+    m.apply(x, None, history_length=_HISTORY_LEN)
+    assert torch.allclose(x, orig, atol=1e-6)
+
+
+class TestHistorySwapFootValues:
+  def test_swap_all_frames(self):
+    m = _SwapFootValues()
+    # 2 history frames, 2 values each.
+    x = torch.tensor([[0.1, 0.2, 0.3, 0.4]])
+    m.apply(x, None, history_length=2)
+    # Frame 0: [0.1, 0.2] → [0.2, 0.1]
+    # Frame 1: [0.3, 0.4] → [0.4, 0.3]
+    assert torch.allclose(x, torch.tensor([[0.2, 0.1, 0.4, 0.3]]))
+
+
+class TestHistorySwapForces:
+  def test_foot_forces_all_frames(self):
+    m = _SwapFootForces()
+    # 2 history frames, 6 values each.
+    x = torch.tensor([[1, 2, 3, 4, 5, 6, 10, 20, 30, 40, 50, 60]], dtype=torch.float)
+    m.apply(x, None, history_length=2)
+    # Frame 0: [1,2,3,4,5,6] → [4,-5,6,1,-2,3]
+    # Frame 1: [10,20,30,40,50,60] → [40,-50,60,10,-20,30]
+    expected = torch.tensor(
+      [[4, -5, 6, 1, -2, 3, 40, -50, 60, 10, -20, 30]], dtype=torch.float
+    )
+    assert torch.allclose(x, expected)
+
+  def test_wrist_forces_all_frames(self):
+    m = _SwapWristForces()
+    x = torch.tensor([[1, 2, 3, 4, 5, 6, 10, 20, 30, 40, 50, 60]], dtype=torch.float)
+    m.apply(x, None, history_length=2)
+    expected = torch.tensor(
+      [[4, -5, 6, 1, -2, 3, 40, -50, 60, 10, -20, 30]], dtype=torch.float
+    )
+    assert torch.allclose(x, expected)
+
+
+class TestHistoryFullObsMirror:
+  def test_actor_obs_shape_preserved_with_history(self):
+    sym = _make_symmetry_with_history()
+    obs = torch.randn(4, sum(d * _HISTORY_LEN for d in _ACTOR_DIMS))
+    mirrored = sym.mirror_obs(obs, "actor")
+    assert mirrored.shape == obs.shape
+
+  def test_double_mirror_identity_with_history(self):
+    """mirror(mirror(obs)) == obs with history > 1."""
+    sym = _make_symmetry_with_history()
+    obs = torch.randn(4, sum(d * _HISTORY_LEN for d in _ACTOR_DIMS))
+    mirrored = sym.mirror_obs(obs, "actor")
+    double_mirrored = sym.mirror_obs(mirrored, "actor")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+  def test_joint_swap_per_frame(self):
+    """Verify joint_pos segment is swapped independently per history frame."""
+    sym = _make_symmetry_with_history()
+    total_dim = sum(d * _HISTORY_LEN for d in _ACTOR_DIMS)
+    obs = torch.zeros(1, total_dim)
+
+    # joint_pos offset in flattened obs: (3+3+3+2) * 4 = 44
+    jp_offset = sum(_ACTOR_DIMS[:4]) * _HISTORY_LEN  # 11 * 4 = 44
+    feature_dim = 29
+
+    # Set frame 0 left leg joints to 100+idx, right leg to 200+idx.
+    for i in range(6):
+      obs[0, jp_offset + i] = 100 + i
+      obs[0, jp_offset + 6 + i] = 200 + i
+    # Set frame 1 left leg joints to 300+idx, right leg to 400+idx.
+    f1 = jp_offset + feature_dim
+    for i in range(6):
+      obs[0, f1 + i] = 300 + i
+      obs[0, f1 + 6 + i] = 400 + i
+
+    mirrored = sym.mirror_obs(obs, "actor")
+
+    # Check frame 0 swap.
+    for i in range(6):
+      j = i + 6
+      expected = obs[0, jp_offset + j].item()
+      if i in _SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, jp_offset + i].item() == pytest.approx(expected), (
+        f"frame0 joint_pos[{i}]"
+      )
+
+    # Check frame 1 swap.
+    for i in range(6):
+      j = i + 6
+      expected = obs[0, f1 + j].item()
+      if i in _SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, f1 + i].item() == pytest.approx(expected), (
+        f"frame1 joint_pos[{i}]"
+      )

@@ -187,11 +187,13 @@ Uses rsl_rl's built-in `symmetry_cfg` in PPO to double mini-batches by mirroring
 
 **Sign-flip joints**: all roll and yaw joints. Pitch joints do NOT flip.
 
+**History-aware mirroring**: All mirror classes accept `history_length` and correctly handle `history_length > 1` with `flatten_history_dim=True` (the default). When history is present, mjlab flattens segments in term-major order (`[t0_feat, t1_feat, ..., tN_feat]`). Mirror classes reshape the flattened segment to `(batch, history_length, feature_dim)`, apply the transform independently per frame, and write back. With `history_length=1` (current locomanipulation default), the fast path is taken with no reshape overhead.
+
 **Config**: `SymmetryPpoAlgorithmCfg` (local subclass of `RslRlPpoAlgorithmCfg`) in `rl_cfg.py` with `symmetry_cfg: bool` field. Enabled by default. Disable via `--agent.algorithm.symmetry_cfg=False`.
 
 **Runner lifecycle**: `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before `super().__init__()` to avoid kwarg conflict with PPO, then sets `self.alg.symmetry` directly (without mutating `self.cfg`, which `train.py` later dumps to YAML).
 
-**Tests**: `tests/test_symmetry.py` — 25 mock tests covering joint swaps, sign flips, per-term mirror rules, batch doubling, and double-mirror identity.
+**Tests**: `tests/test_symmetry.py` — 35 mock tests covering joint swaps, sign flips, per-term mirror rules, batch doubling, double-mirror identity, and history-aware mirroring (per-frame correctness with `history_length > 1`).
 
 ### Locomanipulation Angular Velocity Tuning
 

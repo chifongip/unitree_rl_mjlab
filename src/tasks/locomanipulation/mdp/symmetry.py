@@ -103,11 +103,14 @@ class G1Symmetry:
     term_dims = self._obs_manager._group_obs_term_dim[group_name]
     plan = self._group_mirror_plans[group_name]
 
+    group_cfg = self._obs_manager.cfg.get(group_name)
+    history_length = getattr(group_cfg, "history_length", 1) or 1
+
     idx = 0
     for mirror, dims in zip(plan, term_dims):
       dim = int(torch.tensor(dims).prod().item())
       segment = mirrored[:, idx : idx + dim]
-      mirror.apply(segment, self)
+      mirror.apply(segment, self, history_length)
       idx += dim
     return mirrored
 
@@ -120,12 +123,12 @@ class G1Symmetry:
 
 class _TermMirror:
   """Base class for observation term mirroring."""
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
     raise NotImplementedError
 
 
 class _IdentityMirror(_TermMirror):
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
     pass
 
 
@@ -134,9 +137,15 @@ class _NegateIndices(_TermMirror):
   def __init__(self, indices: tuple[int, ...]):
     self._indices = indices
 
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
-    for i in self._indices:
-      segment[:, i] = -segment[:, i]
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
+    if history_length > 1:
+      feature_dim = segment.shape[-1] // history_length
+      seg = segment.view(segment.shape[0], history_length, feature_dim)
+      for i in self._indices:
+        seg[:, :, i] = -seg[:, :, i]
+    else:
+      for i in self._indices:
+        segment[:, i] = -segment[:, i]
 
 
 class _SwapAndFlipJoints(_TermMirror):
@@ -145,41 +154,60 @@ class _SwapAndFlipJoints(_TermMirror):
     self._swap_idx = G1Symmetry._build_swap_index(n_joints, swap_partners)
     self._sign_mask = G1Symmetry._build_sign_mask(n_joints, flip_set)
 
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
     swap = self._swap_idx.to(segment.device)
     sign = self._sign_mask.to(segment.device)
-    segment[:] = segment[..., swap] * sign
+    if history_length > 1:
+      feature_dim = segment.shape[-1] // history_length
+      seg = segment.view(segment.shape[0], history_length, feature_dim)
+      seg[:] = seg[..., swap] * sign
+    else:
+      segment[:] = segment[..., swap] * sign
 
 
 class _SwapFootValues(_TermMirror):
   """Swap left/right foot values (each foot is 1 value)."""
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
-    # Assumes segment has shape (batch, 2): [left, right].
-    segment[:] = segment[..., [1, 0]]
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
+    if history_length > 1:
+      feature_dim = segment.shape[-1] // history_length
+      seg = segment.view(segment.shape[0], history_length, feature_dim)
+      seg[:] = seg[..., [1, 0]]
+    else:
+      segment[:] = segment[..., [1, 0]]
 
 
 class _SwapFootForces(_TermMirror):
   """Swap left/right foot forces and negate y-component."""
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
     # segment shape: (batch, 6) = [left_fx, left_fy, left_fz, right_fx, right_fy, right_fz]
-    left = segment[:, :3].clone()
-    right = segment[:, 3:].clone()
-    left[:, 1] = -left[:, 1]
-    right[:, 1] = -right[:, 1]
-    segment[:, :3] = right
-    segment[:, 3:] = left
+    # With history: (batch, history * 6) in term-major order.
+    if history_length > 1:
+      feature_dim = segment.shape[-1] // history_length
+      seg = segment.view(segment.shape[0], history_length, feature_dim)
+    else:
+      seg = segment
+    left = seg[..., :3].clone()
+    right = seg[..., 3:].clone()
+    left[..., 1] = -left[..., 1]
+    right[..., 1] = -right[..., 1]
+    seg[..., :3] = right
+    seg[..., 3:] = left
 
 
 class _SwapWristForces(_TermMirror):
   """Swap left/right wrist forces and negate y-component."""
-  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry) -> None:
-    # Same layout as foot forces.
-    left = segment[:, :3].clone()
-    right = segment[:, 3:].clone()
-    left[:, 1] = -left[:, 1]
-    right[:, 1] = -right[:, 1]
-    segment[:, :3] = right
-    segment[:, 3:] = left
+  def apply(self, segment: torch.Tensor, _ctx: G1Symmetry, history_length: int = 1) -> None:
+    if history_length > 1:
+      feature_dim = segment.shape[-1] // history_length
+      seg = segment.view(segment.shape[0], history_length, feature_dim)
+    else:
+      seg = segment
+    left = seg[..., :3].clone()
+    right = seg[..., 3:].clone()
+    left[..., 1] = -left[..., 1]
+    right[..., 1] = -right[..., 1]
+    seg[..., :3] = right
+    seg[..., 3:] = left
 
 
 def _get_term_mirror(term_name: str) -> _TermMirror | None:

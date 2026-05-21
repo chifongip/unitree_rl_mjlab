@@ -140,7 +140,7 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       terms=actor_terms,
       concatenate_terms=True,
       enable_corruption=True,
-      history_length=1,
+      history_length=5,
     ),
     "critic": ObservationGroupCfg(
       terms=critic_terms,
