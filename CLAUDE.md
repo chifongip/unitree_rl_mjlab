@@ -46,6 +46,8 @@ python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --video --video-len
 python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --viewer viser
 ```
 
+**Keyboard controls** (native viewer only, numpad): 8/2=forward/back, 4/6=left/right, 7/9=yaw, +/-=height, 5=zero velocity, 0=reset height. See "Play-Mode Keyboard Overrides" below.
+
 ### Convert motion CSV to NPZ
 ```bash
 python scripts/csv_to_npz.py --input-file src/assets/motions/g1/dance1.csv --output-name dance1.npz --input-fps 30 --output-fps 50 --robot g1
@@ -150,6 +152,25 @@ Four config options enable controlled model comparison in play mode:
 - **`fixed_height`** (`BaseHeightCommandCfg`): `float | None` — pin commanded height (meters). Set via `--env.commands.base_height.fixed_height=0.7`.
 
 All default to `None` (existing behavior). Play mode keeps `hand_force` event with random forces disabled; set `constant_force` to activate.
+
+### Play-Mode Keyboard Overrides
+
+`scripts/play.py` provides numpad-driven command overrides for the native MuJoCo viewer. No config changes needed — overrides activate on first keypress and persist across resets.
+
+**How it works:** `KeyboardCommandOverride` holds velocity/height floats as shared state between the GLFW key callback thread and the main physics thread. `_patch_command_compute()` wraps each command term's `compute()` to apply overrides after the base computation (after resampling). Thread-safe by design (GIL-atomic attribute access). Only active with `--viewer native` (default when display is available); viser viewer is unaffected.
+
+**Key mapping** (numpad — avoids MuJoCo camera control conflicts):
+
+| Key | Action | Step |
+|-----|--------|------|
+| KP_8 / KP_2 | lin_vel_x +/- | 0.1 m/s |
+| KP_4 / KP_6 | lin_vel_y +/- | 0.1 m/s |
+| KP_7 / KP_9 | ang_vel_z +/- | 0.1 rad/s |
+| KP_ADD / KP_SUBTRACT | height +/- | 0.02 m |
+| KP_5 | zero all velocity | — |
+| KP_0 | reset height to nominal | — |
+
+Current values print to terminal on each keypress: `[KB] vel=(+1.0, +0.0, +0.0) h=0.785`. Gracefully skips missing command terms (e.g., velocity-only tasks without `base_height`).
 
 ### Locomanipulation Symmetric Data Augmentation
 
