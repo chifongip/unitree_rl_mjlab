@@ -238,7 +238,20 @@ Formula: `std = std_standing * (1-α_s) + std_walking * α_s`, where `α_s = σ(
 - `decay = exp(-dt / τ)` where `dt = 0.02s` (4× decimation × 0.005s physics). τ = 1.0s → decay = 0.980. Match τ to the robot's physical deceleration capability.
 - `blend_scale`: transition width ≈ 4/k. k=30 → 0.13 m/s blend zone. Wider (k=20) = smoother but less precise regime separation. Narrower (k=50) = sharper, closer to original behavior. Configurable via `cfg.rewards["pose"].params["blend_scale"]`.
 
-**Verification:** Short training run (5 iterations, 64 envs) — no NaN, stable losses, all 17 reward terms reporting normally.
+**Standing stability rewards** (added to address persistent sway after the above fixes):
+
+| Reward | Weight | Scope | Role |
+|---|---|---|---|
+| `stand_still` | -1.0 | Lower-body joints | "Be at the target pose" (position) |
+| `leg_joint_vel_penalty` | -0.5 | Lower-body joints | "And stay there" (velocity damping) |
+| `base_lin_vel_penalty` | -1.0 | Base xy velocity | "Don't drift" (horizontal velocity) |
+| `body_orientation_l2` | -1.0 | Torso link | "Stay upright" (torso tilt) |
+
+`base_lin_vel_penalty` (`rewards.py:138-153`): Penalizes `||v_xy||^2` when command < 0.1. Fills the gap left by `track_linear_velocity`'s broad Gaussian (std=0.5), which has a weak gradient for small drift.
+
+`leg_joint_vel_penalty` (`rewards.py:154-172`): Penalizes `sum(joint_vel^2)` for lower-body joints when command < 0.1. Acts as a damper on corrective leg motions to prevent self-excited oscillations during walk-to-stand transitions. Complements `stand_still` (position) with a velocity constraint.
+
+**Verification:** Short training run (5 iterations, 64 envs) — no NaN, stable losses, all 19 reward terms reporting normally.
 
 ### Locomanipulation Base Height Command
 
