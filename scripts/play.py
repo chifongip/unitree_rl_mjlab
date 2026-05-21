@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,6 +18,113 @@ from mjlab.utils.os import get_wandb_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
+
+
+class KeyboardCommandOverride:
+    """Keyboard-driven command overrides for the native viewer.
+
+    Shared state between GLFW thread (key callback) and main physics thread
+    (monkey-patched compute). Thread-safe: callback only sets Python floats
+    which are GIL-atomic; compute reads them on the main thread.
+    """
+
+    def __init__(self, nominal_height: float = 0.785):
+        self.vel_x: float = 0.0
+        self.vel_y: float = 0.0
+        self.ang_vel_z: float = 0.0
+        self.vel_enabled: bool = False
+
+        self.height: float = nominal_height
+        self.height_enabled: bool = False
+        self.nominal_height: float = nominal_height
+
+        self.vel_step: float = 0.1
+        self.ang_step: float = 0.1
+        self.height_step: float = 0.02
+
+        self._last_key_time: float = 0.0
+        self._debounce_s: float = 0.05
+
+    def __call__(self, key: int) -> None:
+        """Key callback — runs on GLFW thread, must not touch env/sim."""
+        now = time.monotonic()
+        if now - self._last_key_time < self._debounce_s:
+            return
+        self._last_key_time = now
+
+        from mjlab.viewer.native.keys import (
+            KEY_KP_0,
+            KEY_KP_2,
+            KEY_KP_4,
+            KEY_KP_5,
+            KEY_KP_6,
+            KEY_KP_7,
+            KEY_KP_8,
+            KEY_KP_9,
+            KEY_KP_ADD,
+            KEY_KP_SUBTRACT,
+        )
+
+        handled = True
+        if key == KEY_KP_8:
+            self.vel_x += self.vel_step
+        elif key == KEY_KP_2:
+            self.vel_x -= self.vel_step
+        elif key == KEY_KP_6:
+            self.vel_y += self.vel_step
+        elif key == KEY_KP_4:
+            self.vel_y -= self.vel_step
+        elif key == KEY_KP_9:
+            self.ang_vel_z += self.ang_step
+        elif key == KEY_KP_7:
+            self.ang_vel_z -= self.ang_step
+        elif key == KEY_KP_ADD:
+            self.height += self.height_step
+        elif key == KEY_KP_SUBTRACT:
+            self.height -= self.height_step
+        elif key == KEY_KP_5:
+            self.vel_x = 0.0
+            self.vel_y = 0.0
+            self.ang_vel_z = 0.0
+        elif key == KEY_KP_0:
+            self.height = self.nominal_height
+        else:
+            handled = False
+
+        if handled:
+            self.vel_enabled = True
+            self.height_enabled = True
+            print(
+                f"\r[KB] vel=({self.vel_x:+.1f}, {self.vel_y:+.1f}, "
+                f"{self.ang_vel_z:+.1f}) h={self.height:.3f}  ",
+                end="",
+                flush=True,
+            )
+
+
+def _patch_command_compute(term, override: KeyboardCommandOverride, term_type: str):
+    """Monkey-patch a command term's compute() to apply keyboard overrides."""
+    original_compute = term.compute
+
+    if term_type == "twist":
+
+        def patched_compute(dt):
+            original_compute(dt)
+            if override.vel_enabled:
+                term.vel_command_b[:, 0] = override.vel_x
+                term.vel_command_b[:, 1] = override.vel_y
+                term.vel_command_b[:, 2] = override.ang_vel_z
+
+        term.compute = patched_compute
+
+    elif term_type == "base_height":
+
+        def patched_compute(dt):
+            original_compute(dt)
+            if override.height_enabled:
+                term._height_command[:, 0] = override.height
+
+        term.compute = patched_compute
 
 
 @dataclass(frozen=True)
@@ -167,8 +275,31 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
+  # Set up keyboard command override for native viewer.
+  override = None
   if resolved_viewer == "native":
-    NativeMujocoViewer(env, policy).run()
+    nominal_height = 0.785
+    cmd_mgr = env.unwrapped.command_manager
+    if hasattr(cmd_mgr, "_terms") and "base_height" in cmd_mgr._terms:
+      bh_cfg = cmd_mgr._terms["base_height"].cfg
+      if hasattr(bh_cfg, "nominal_height"):
+        nominal_height = bh_cfg.nominal_height
+
+    override = KeyboardCommandOverride(nominal_height=nominal_height)
+
+    for term_name in ("twist", "base_height"):
+      if term_name in cmd_mgr._terms:
+        _patch_command_compute(cmd_mgr._terms[term_name], override, term_name)
+      else:
+        print(f"[INFO] Keyboard override: '{term_name}' term not found, skipping")
+
+    print(
+      "[INFO] Keyboard overrides: numpad 8/2=vel_x, 4/6=vel_y, "
+      "7/9=yaw, +/-=height, 5=zero vel, 0=reset height"
+    )
+
+  if resolved_viewer == "native":
+    NativeMujocoViewer(env, policy, key_callback=override).run()
   elif resolved_viewer == "viser":
     ViserPlayViewer(env, policy).run()
   else:

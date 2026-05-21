@@ -402,8 +402,8 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       "right_wrist_pitch_joint": 0.0,
       "right_wrist_yaw_joint": 0.0,
     }
-    cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
-    cfg.commands["twist"].fixed_command = (1.0, 0.0, 0.0)
+    # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
+    cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
     cfg.commands["base_height"].fixed_height = 0.785
 
     if cfg.scene.terrain is not None:
