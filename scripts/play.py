@@ -71,13 +71,13 @@ class KeyboardCommandOverride:
         elif key == KEY_KP_2:
             self.vel_x -= self.vel_step
         elif key == KEY_KP_6:
-            self.vel_y += self.vel_step
-        elif key == KEY_KP_4:
             self.vel_y -= self.vel_step
+        elif key == KEY_KP_4:
+            self.vel_y += self.vel_step
         elif key == KEY_KP_9:
-            self.ang_vel_z += self.ang_step
-        elif key == KEY_KP_7:
             self.ang_vel_z -= self.ang_step
+        elif key == KEY_KP_7:
+            self.ang_vel_z += self.ang_step
         elif key == KEY_KP_ADD:
             self.height += self.height_step
         elif key == KEY_KP_SUBTRACT:
