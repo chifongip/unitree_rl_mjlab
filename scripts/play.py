@@ -28,17 +28,24 @@ class KeyboardCommandOverride:
     Shared state between GLFW thread (key callback) and main physics thread
     (monkey-patched compute). Thread-safe: callback only sets Python floats
     which are GIL-atomic; compute reads them on the main thread.
+
+    Keyboard presses set *target* values. The patched compute blends the
+    current command toward the target each step using exponential decay
+    (default factor 0.95, ~1s time constant at 50Hz), producing smooth
+    transitions instead of instant jumps.
     """
 
-    def __init__(self, nominal_height: float = 0.785):
-        self.vel_x: float = 0.0
-        self.vel_y: float = 0.0
-        self.ang_vel_z: float = 0.0
-        self.vel_enabled: bool = False
+    def __init__(self, nominal_height: float = 0.785, decay: float = 0.95):
+        self.target_vel_x: float = 0.0
+        self.target_vel_y: float = 0.0
+        self.target_ang_vel_z: float = 0.0
+        self.vel_active: bool = False
 
-        self.height: float = nominal_height
-        self.height_enabled: bool = False
+        self.target_height: float = nominal_height
+        self.height_active: bool = False
         self.nominal_height: float = nominal_height
+
+        self.decay: float = decay
 
         self.vel_step: float = 0.1
         self.ang_step: float = 0.1
@@ -69,62 +76,76 @@ class KeyboardCommandOverride:
 
         handled = True
         if key == KEY_KP_8:
-            self.vel_x += self.vel_step
+            self.target_vel_x += self.vel_step
         elif key == KEY_KP_2:
-            self.vel_x -= self.vel_step
+            self.target_vel_x -= self.vel_step
         elif key == KEY_KP_6:
-            self.vel_y -= self.vel_step
+            self.target_vel_y -= self.vel_step
         elif key == KEY_KP_4:
-            self.vel_y += self.vel_step
+            self.target_vel_y += self.vel_step
         elif key == KEY_KP_9:
-            self.ang_vel_z -= self.ang_step
+            self.target_ang_vel_z -= self.ang_step
         elif key == KEY_KP_7:
-            self.ang_vel_z += self.ang_step
+            self.target_ang_vel_z += self.ang_step
         elif key == KEY_KP_ADD:
-            self.height += self.height_step
+            self.target_height += self.height_step
         elif key == KEY_KP_SUBTRACT:
-            self.height -= self.height_step
+            self.target_height -= self.height_step
         elif key == KEY_KP_5:
-            self.vel_x = 0.0
-            self.vel_y = 0.0
-            self.ang_vel_z = 0.0
+            self.target_vel_x = 0.0
+            self.target_vel_y = 0.0
+            self.target_ang_vel_z = 0.0
         elif key == KEY_KP_0:
-            self.height = self.nominal_height
+            self.target_height = self.nominal_height
         else:
             handled = False
 
         if handled:
-            self.vel_enabled = True
-            self.height_enabled = True
+            self.vel_active = True
+            self.height_active = True
             print(
-                f"\r[KB] vel=({self.vel_x:+.1f}, {self.vel_y:+.1f}, "
-                f"{self.ang_vel_z:+.1f}) h={self.height:.3f}  ",
+                f"\r[KB] vel=({self.target_vel_x:+.1f}, {self.target_vel_y:+.1f}, "
+                f"{self.target_ang_vel_z:+.1f}) h={self.target_height:.3f}  ",
                 end="",
                 flush=True,
             )
 
 
 def _patch_command_compute(term, override: KeyboardCommandOverride, term_type: str):
-    """Monkey-patch a command term's compute() to apply keyboard overrides."""
+    """Monkey-patch a command term's compute() to apply keyboard overrides.
+
+    Velocity adjustments (numpad 2/4/6/8, 7/9) are applied instantly for
+    responsive control.  Zeroing all commands (KP_5) uses exponential decay
+    toward zero (~1s time constant at 50Hz) to smooth the walk-to-stand
+    transition.  Height commands are always instant.
+    """
     original_compute = term.compute
 
     if term_type == "twist":
-
         def patched_compute(dt):
             original_compute(dt)
-            if override.vel_enabled:
-                term.vel_command_b[:, 0] = override.vel_x
-                term.vel_command_b[:, 1] = override.vel_y
-                term.vel_command_b[:, 2] = override.ang_vel_z
+            if override.vel_active:
+                if (override.target_vel_x == 0.0 and override.target_vel_y == 0.0
+                        and override.target_ang_vel_z == 0.0):
+                    d = override.decay
+                    term.vel_command_b[:, 0] *= d
+                    term.vel_command_b[:, 1] *= d
+                    term.vel_command_b[:, 2] *= d
+                    small = torch.norm(term.vel_command_b, dim=-1) < 0.1
+                    if small.any():
+                        term.vel_command_b[small] = 0.0
+                else:
+                    term.vel_command_b[:, 0] = override.target_vel_x
+                    term.vel_command_b[:, 1] = override.target_vel_y
+                    term.vel_command_b[:, 2] = override.target_ang_vel_z
 
         term.compute = patched_compute
 
     elif term_type == "base_height":
-
         def patched_compute(dt):
             original_compute(dt)
-            if override.height_enabled:
-                term._height_command[:, 0] = override.height
+            if override.height_active:
+                term._height_command[:, 0] = override.target_height
 
         term.compute = patched_compute
 
