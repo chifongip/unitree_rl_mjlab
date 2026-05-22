@@ -66,15 +66,33 @@ def track_base_height(
   std: float,
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  standing_command_name: str | None = None,
+  standing_threshold: float = 0.1,
+  standing_weight: float = 1.0,
+  walking_weight: float = 1.0,
 ) -> torch.Tensor:
-  """Reward for tracking the commanded base height (world-frame z)."""
+  """Reward for tracking the commanded base height (world-frame z).
+
+  Optionally applies different weights for standing vs walking, gated by
+  the twist command magnitude (consistent with stand_still).
+  """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
   assert command is not None, f"Command '{command_name}' not found."
   actual_z = asset.data.root_link_pos_w[:, 2]
   cmd_z = command[:, 0]
   error = torch.square(cmd_z - actual_z)
-  return torch.exp(-error / std**2)
+  reward = torch.exp(-error / std**2)
+
+  if standing_command_name is not None:
+    twist_cmd = env.command_manager.get_command(standing_command_name)
+    assert twist_cmd is not None, f"Command '{standing_command_name}' not found."
+    total_command = torch.norm(twist_cmd[:, :2], dim=1) + torch.abs(twist_cmd[:, 2])
+    is_standing = (total_command < standing_threshold).float()
+    weight = is_standing * standing_weight + (1.0 - is_standing) * walking_weight
+    reward = reward * weight
+
+  return reward
 
 
 def body_orientation_l2(

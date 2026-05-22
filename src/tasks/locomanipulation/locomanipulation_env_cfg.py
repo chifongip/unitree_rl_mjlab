@@ -290,8 +290,15 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "track_base_height": RewardTermCfg(
       func=mdp.track_base_height,
-      weight=1.0,
-      params={"command_name": "base_height", "std": math.sqrt(0.05)},
+      weight=0.5,
+      params={
+        "command_name": "base_height",
+        "std": math.sqrt(0.05),
+        "standing_command_name": "twist",
+        "standing_threshold": 0.1,
+        "standing_weight": 2.0,
+        "walking_weight": 1.0,
+      },
     ),
     "track_angular_velocity": RewardTermCfg(
       func=mdp.track_angular_velocity,
