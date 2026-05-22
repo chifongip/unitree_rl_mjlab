@@ -204,6 +204,10 @@ def _apply_env_overrides(env_cfg, overrides: dict) -> None:
         setattr(env_cfg, key, overrides[key])
 
   # Observation group history_length and per-term overrides.
+  # Track (id(term_obj), param_key) to avoid re-applying overrides to shared term
+  # objects.  In the config factory, critic_terms = {**actor_terms, ...} creates
+  # shallow copies — the term objects are the same Python objects in both groups.
+  applied_params: set[tuple[int, str]] = set()
   if "observations" in overrides and isinstance(overrides["observations"], dict):
     for group_name, group_data in overrides["observations"].items():
       if not isinstance(group_data, dict) or group_name not in env_cfg.observations:
@@ -227,6 +231,26 @@ def _apply_env_overrides(env_cfg, overrides: dict) -> None:
             current = group_cfg.terms[term_name].history_length
             if _check_and_set(path, current, term_data["history_length"]):
               group_cfg.terms[term_name].history_length = term_data["history_length"]
+
+          if "params" in term_data and isinstance(term_data["params"], dict):
+            for param_key, param_value in term_data["params"].items():
+              if param_key not in group_cfg.terms[term_name].params:
+                continue
+              # Only restore scalar params. Structured objects like
+              # SceneEntityCfg lose their type when round-tripped through
+              # YAML and would break downstream code expecting .name etc.
+              if not isinstance(param_value, (int, float, bool, str, type(None))):
+                continue
+              term_obj = group_cfg.terms[term_name]
+              if (id(term_obj), param_key) in applied_params:
+                continue
+              current = group_cfg.terms[term_name].params[param_key]
+              path = (
+                f"observations.{group_name}.terms.{term_name}.params.{param_key}"
+              )
+              if _check_and_set(path, current, param_value):
+                group_cfg.terms[term_name].params[param_key] = param_value
+              applied_params.add((id(term_obj), param_key))
 
   # Simulation timestep.
   if "sim" in overrides and isinstance(overrides["sim"], dict):
