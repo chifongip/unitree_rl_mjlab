@@ -20,6 +20,45 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 
 
+def _extract_scalar_overrides(data: dict, max_depth: int = 3) -> dict:
+  """Extract only scalar and simple dict/list values from a nested dict."""
+  from enum import Enum
+  result = {}
+  for key, value in data.items():
+    if isinstance(value, Enum):
+      result[key] = value.value
+    elif isinstance(value, (int, float, bool, str, type(None))):
+      result[key] = value
+    elif isinstance(value, dict) and max_depth > 0:
+      nested = _extract_scalar_overrides(value, max_depth - 1)
+      if nested:
+        result[key] = nested
+    elif isinstance(value, list) and max_depth > 0:
+      cleaned = []
+      for v in value:
+        if isinstance(v, Enum):
+          cleaned.append(v.value)
+        elif isinstance(v, (int, float, bool, str, type(None))):
+          cleaned.append(v)
+        else:
+          break
+      else:
+        result[key] = cleaned
+  return result
+
+
+def _dump_env_overrides_yaml(filename: Path, env_cfg: dict) -> None:
+  """Save a clean YAML of policy-dimension-critical env config fields.
+
+  Only includes scalars and simple dicts/lists. Safe to load with yaml.safe_load.
+  """
+  import yaml
+  overrides = _extract_scalar_overrides(env_cfg, max_depth=3)
+  filename.parent.mkdir(parents=True, exist_ok=True)
+  with open(filename, "w") as f:
+    yaml.safe_dump(overrides, f, sort_keys=False)
+
+
 @dataclass(frozen=True)
 class TrainConfig:
   env: ManagerBasedRlEnvCfg
@@ -134,6 +173,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
+    _dump_env_overrides_yaml(log_dir / "params" / "env_overrides.yaml", env_cfg)
 
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True

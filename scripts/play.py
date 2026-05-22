@@ -1,6 +1,7 @@
 """Script to play RL agent with RSL-RL."""
 
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -9,6 +10,7 @@ from typing import Literal
 
 import torch
 import tyro
+import yaml
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
@@ -127,6 +129,110 @@ def _patch_command_compute(term, override: KeyboardCommandOverride, term_type: s
         term.compute = patched_compute
 
 
+_PYTHON_TAG_RE = re.compile(r"!!python/\S+")
+
+
+def _load_params_overrides(params_dir: Path) -> dict | None:
+  """Load safe scalar/dict overrides from training params directory.
+
+  Prefers env_overrides.yaml (clean, safe-loadable) if it exists.
+  Falls back to env.yaml with Python tag stripping.
+  Returns None if no loadable file is found.
+  """
+  clean_path = params_dir / "env_overrides.yaml"
+  if clean_path.exists():
+    try:
+      data = yaml.safe_load(clean_path.read_text())
+      return data if isinstance(data, dict) else None
+    except Exception as e:
+      print(f"[WARN] Could not load {clean_path}: {e}")
+
+  full_path = params_dir / "env.yaml"
+  if not full_path.exists():
+    return None
+  try:
+    text = full_path.read_text()
+    cleaned = _PYTHON_TAG_RE.sub("", text)
+    data = yaml.safe_load(cleaned)
+    return data if isinstance(data, dict) else None
+  except Exception as e:
+    print(f"[WARN] Could not load params from {full_path}: {e}")
+    return None
+
+
+def _apply_env_overrides(env_cfg, overrides: dict) -> None:
+  """Apply scalar/dict overrides from saved training params to env_cfg.
+
+  Only overrides fields that actually differ from the current config.
+  Prints each differing field as: field: current_value -> saved_value.
+  """
+  diffs: list[str] = []
+
+  def _check_and_set(path: str, current, saved) -> bool:
+    """Return True and append to diffs if values differ."""
+    if current != saved:
+      diffs.append(f"  {path}: {current!r} -> {saved!r}")
+      return True
+    return False
+
+  # Top-level scalar fields.
+  for key in ("decimation", "is_finite_horizon", "scale_rewards_by_dt", "seed"):
+    if key in overrides and isinstance(overrides[key], (int, float, bool)):
+      current = getattr(env_cfg, key)
+      if _check_and_set(key, current, overrides[key]):
+        setattr(env_cfg, key, overrides[key])
+
+  # Observation group history_length and per-term overrides.
+  if "observations" in overrides and isinstance(overrides["observations"], dict):
+    for group_name, group_data in overrides["observations"].items():
+      if not isinstance(group_data, dict) or group_name not in env_cfg.observations:
+        continue
+      group_cfg = env_cfg.observations[group_name]
+
+      if "history_length" in group_data and isinstance(
+          group_data["history_length"], (int, type(None))):
+        path = f"observations.{group_name}.history_length"
+        if _check_and_set(path, group_cfg.history_length, group_data["history_length"]):
+          group_cfg.history_length = group_data["history_length"]
+
+      if "terms" in group_data and isinstance(group_data["terms"], dict):
+        for term_name, term_data in group_data["terms"].items():
+          if (not isinstance(term_data, dict)
+              or term_name not in group_cfg.terms):
+            continue
+          if "history_length" in term_data and isinstance(
+              term_data["history_length"], int):
+            path = f"observations.{group_name}.terms.{term_name}.history_length"
+            current = group_cfg.terms[term_name].history_length
+            if _check_and_set(path, current, term_data["history_length"]):
+              group_cfg.terms[term_name].history_length = term_data["history_length"]
+
+  # Simulation timestep.
+  if "sim" in overrides and isinstance(overrides["sim"], dict):
+    mujoco_data = overrides["sim"].get("mujoco")
+    if isinstance(mujoco_data, dict) and "timestep" in mujoco_data:
+      if isinstance(mujoco_data["timestep"], (int, float)):
+        if _check_and_set("sim.mujoco.timestep",
+                           env_cfg.sim.mujoco.timestep, mujoco_data["timestep"]):
+          env_cfg.sim.mujoco.timestep = mujoco_data["timestep"]
+
+  # Action scale dicts.
+  if "actions" in overrides and isinstance(overrides["actions"], dict):
+    for action_name, action_data in overrides["actions"].items():
+      if not isinstance(action_data, dict) or action_name not in env_cfg.actions:
+        continue
+      if "scale" in action_data and isinstance(action_data["scale"], dict):
+        path = f"actions.{action_name}.scale"
+        if _check_and_set(path, env_cfg.actions[action_name].scale, action_data["scale"]):
+          env_cfg.actions[action_name].scale = action_data["scale"]
+
+  if diffs:
+    print("[INFO]: Params differ from saved training config:")
+    print("\n".join(diffs))
+  else:
+    print("[INFO]: All saved params match current config")
+
+
 @dataclass(frozen=True)
 class PlayConfig:
   agent: Literal["zero", "random", "trained"] = "trained"
@@ -142,6 +248,10 @@ class PlayConfig:
   viewer: Literal["auto", "native", "viser"] = "auto"
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
+  params_dir: str | None = None
+  """Path to params directory containing env.yaml. Auto-detected from checkpoint
+  location when not specified. Use for wandb checkpoints where params/ is not
+  co-located."""
 
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
@@ -214,6 +324,17 @@ def run_play(task_id: str, cfg: PlayConfig):
         f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
       )
     log_dir = resume_path.parent
+
+  # Auto-restore env config from training params.
+  if TRAINED_MODE and log_dir is not None:
+    if cfg.params_dir is not None:
+      params_path = Path(cfg.params_dir)
+    else:
+      params_path = log_dir / "params"
+    overrides = _load_params_overrides(params_path)
+    if overrides is not None:
+      _apply_env_overrides(env_cfg, overrides)
+      print(f"[INFO]: Restored env config from {params_path}")
 
   if cfg.num_envs is not None:
     env_cfg.scene.num_envs = cfg.num_envs
