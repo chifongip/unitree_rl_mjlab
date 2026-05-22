@@ -226,7 +226,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.rewards["track_angular_velocity"].params["ang_vel_xy_weight"] = 0.05
   # Lower stand_still threshold so pure rotation commands (0.05–0.1 rad/s) are
   # not penalized as standing still.
-  cfg.rewards["stand_still"].params["command_threshold"] = 0.05
+  cfg.rewards["stand_still"].params["command_threshold"] = 0.1
 
   # Rationale for std values:
   # - Knees/hip_pitch get the loosest std to allow natural leg bending during stride.
