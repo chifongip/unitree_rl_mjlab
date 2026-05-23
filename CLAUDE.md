@@ -153,7 +153,7 @@ When playing a trained policy, `scripts/play.py` restores training-time env conf
 
 **`_extract_scalar_overrides`** (duplicated in `train.py` and `tune.py`): Recursively extracts only scalar values (int/float/bool/str/None/Enum) plus simple dicts/lists from `asdict(env_cfg)`. No depth limit — reaches observation term params nested 5+ levels deep. Saved as `env_overrides.yaml` alongside `env.yaml` and `agent.yaml`.
 
-**`_load_params_overrides`** (`play.py`): Prefers `env_overrides.yaml` (clean YAML, `safe_load`-able). Falls back to `env.yaml` with Python tag stripping. Auto-detected from checkpoint `log_dir/params/`, overridable via `--params_dir`.
+**`_load_params_overrides`** (`play.py`): Prefers `env_overrides.yaml` (clean YAML, `safe_load`-able). Falls back to `env.yaml` with Python tag stripping. Auto-detected from checkpoint `log_dir/params/`, overridable via `--params_dir`. Calls `_supplement_obs_terms` after loading `env_overrides.yaml` to fill in missing observation term params from `env.yaml` (needed for training runs saved with the old `max_depth=3` extraction which omitted terms 5+ levels deep).
 
 **`_apply_env_overrides`** (`play.py`): Restores saved scalar params into play-time `env_cfg`, printing diffs for each changed field. Covers: top-level scalars (decimation, seed), observation group/term `history_length`, observation term `params` (scalar-only — structured objects like `SceneEntityCfg` are skipped since they lose their type when round-tripped through YAML), sim timestep, and action scale dicts. Uses `_check_and_set` pattern: compares current vs saved, prints diff, only sets if different.
 

@@ -164,7 +164,10 @@ def _load_params_overrides(params_dir: Path) -> dict | None:
   if clean_path.exists():
     try:
       data = yaml.safe_load(clean_path.read_text())
-      return data if isinstance(data, dict) else None
+      if isinstance(data, dict):
+        _supplement_obs_terms(data, params_dir)
+        return data
+      return None
     except Exception as e:
       print(f"[WARN] Could not load {clean_path}: {e}")
 
@@ -179,6 +182,47 @@ def _load_params_overrides(params_dir: Path) -> dict | None:
   except Exception as e:
     print(f"[WARN] Could not load params from {full_path}: {e}")
     return None
+
+
+def _supplement_obs_terms(data: dict, params_dir: Path) -> None:
+  """If observation terms are missing from overrides, load them from env.yaml.
+
+  Training runs saved with the old _extract_scalar_overrides (max_depth=3)
+  omitted observation term params.  The full env.yaml contains them and is
+  used here as a secondary source for the terms section only.
+  """
+  obs_data = data.get("observations")
+  if not isinstance(obs_data, dict):
+    return
+
+  for group_data in obs_data.values():
+    if isinstance(group_data, dict) and "terms" in group_data:
+      return  # Already complete.
+
+  full_path = params_dir / "env.yaml"
+  if not full_path.exists():
+    return
+
+  try:
+    text = full_path.read_text()
+    cleaned = _PYTHON_TAG_RE.sub("", text)
+    full_data = yaml.safe_load(cleaned)
+  except Exception as e:
+    print(f"[WARN] Could not supplement obs terms from {full_path}: {e}")
+    return
+
+  if not isinstance(full_data, dict):
+    return
+
+  full_obs = full_data.get("observations")
+  if not isinstance(full_obs, dict):
+    return
+
+  for group_name, group_data in full_obs.items():
+    if not isinstance(group_data, dict):
+      continue
+    if "terms" in group_data and group_name in obs_data:
+      obs_data[group_name]["terms"] = group_data["terms"]
 
 
 def _apply_env_overrides(env_cfg, overrides: dict) -> None:
