@@ -57,6 +57,12 @@ python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --viewer viser
 | KP_5 | zero all velocity | — |
 | KP_0 | reset height to nominal | — |
 
+### Compute Height Postures (Locomanipulation)
+```bash
+python scripts/compute_height_postures.py
+```
+Computes IK-based joint postures for G1 at different standing heights (0.50m–0.785m). Used by `variable_posture` and `stand_still` rewards to look up target joint angles from commanded height.
+
 ### Convert motion CSV to NPZ
 ```bash
 python scripts/csv_to_npz.py --input-file src/assets/motions/g1/dance1.csv --output-name dance1.npz --input-fps 30 --output-fps 50 --robot g1
@@ -106,13 +112,52 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 
 ### Locomanipulation Summary
 
-Policy controls 12 lower-body joints only; upper body (17 DOF) driven by ACCAD motion data via `UpperBodyMotionAction`. Two modes: pose-only (sample frame at reset, hold) and clip playback (frame-by-frame). `default_pose_ratio` curriculum gradually introduces diverse upper-body poses during training.
+Policy controls 12 lower-body joints only; upper body (17 DOF) driven by ACCAD motion data via `UpperBodyMotionAction`. Two modes: pose-only (sample frame at reset, hold) and clip playback (frame-by-frame). `waist_yaw_only=True` zeros out waist_roll/pitch from motion data. `default_pose_ratio` curriculum (`default_pose_ratio_staged`) gradually introduces diverse upper-body poses during training. `fixed_upper_body_pose` (play mode) pins all envs to a specific upper-body joint configuration.
 
-External force curriculum (`HandForceEvent`) applies random wrenches to end-effectors to simulate carrying objects. Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`).
+**Rewards restricted to lower-body joints** (matching policy control): `pose` (variable_posture), `stand_still`, `joint_acc_l2`, `joint_pos_limits`, `leg_joint_vel_penalty`. Full-body rewards (policy compensates via hips): `body_orientation_l2`, `body_ang_vel`, `angular_momentum`.
 
-Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table computed via IK solver. Symmetric data augmentation doubles mini-batches by mirroring across the sagittal plane.
+**`variable_posture`**: Penalizes deviation from default pose with per-joint std that varies by speed regime: `std_standing` (speed < 0.1), `std_walking` (0.1–1.5), `std_running` (>= 1.5). Hard thresholds — no blending. When `height_postures` is set, the desired posture is looked up from a `{height: {joint: radians}}` table based on the commanded height.
 
-Play-mode testing: `fixed_upper_body_pose`, `constant_force`, `fixed_command`, `fixed_height` for controlled model comparison.
+**`stand_still`**: Penalizes joint deviation from target pose only when velocity command magnitude < `command_threshold`. Also supports `height_postures` lookup. Works with `leg_joint_vel_penalty` (damps joint velocities when standing) and `body_orientation_l2` for standing stability.
+
+**`track_base_height`**: Gaussian reward `exp(-(cmd_z - actual_z)^2 / std^2)` multiplied by per-env weight: `standing_weight` (default 1.0) when `|twist_cmd| < 0.1`, `walking_weight` (default 0.5) otherwise.
+
+**`self_collision_cost`**: Penalizes pelvis self-collisions using a `ContactSensor` with force history (`history_length=4`). Counts substeps where any contact force exceeds 10N.
+
+External force curriculum (`HandForceEvent`) applies random wrenches to end-effectors to simulate carrying objects. Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`). Per-env Dirichlet axis scaling for force diversity. Config in `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]`.
+
+Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table (7 entries, 0.50m–0.785m) computed via `scripts/compute_height_postures.py` (IK solver + scipy optimization). Curriculum: `height_scale_staged` ramps `height_scale` from 0 to 1. Both `variable_posture` and `stand_still` look up target joint angles from this table.
+
+Symmetric data augmentation doubles mini-batches by mirroring across the sagittal plane. Enabled via `SymmetryPpoAlgorithmCfg.symmetry_cfg=True` (default). Disable with `--agent.algorithm.symmetry_cfg=False`. `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before PPO init to avoid kwarg conflict. Runner also auto-exports `policy.onnx` on save.
+
+**Play-mode config** (`play=True` in `unitree_g1_locomanipulation_flat_env_cfg`):
+- Infinite episode length, disables observation corruption
+- Removes `push_robot` event, clears all curricula
+- Sets `hand_force` to `no_force_ratio=1.0` with zero force range (disables random impulses; `constant_force` can still be set for testing)
+- Adds `randomize_terrain` on reset
+- Sets `fixed_upper_body_pose` (HOME_KEYFRAME), `fixed_command=(0,0,0)`, `fixed_height=0.785`
+- Flat variant: narrows command ranges, removes terrain_scan/height_scan
+- `--no_terminations` flag disables all termination conditions (useful for viewing motions with dummy agents)
+
+**Play-mode testing flags** (set in config, uncomment to activate):
+- `fixed_upper_body_pose` (action cfg): pin upper body to specific joint angles
+- `constant_force` (event params): apply fixed force every step, bypasses impulse lifecycle
+- `fixed_command` (command cfg): pin velocity command
+- `fixed_height` (command cfg): pin commanded height
+
+**Keyboard controls** (native viewer, locomanipulation): `KeyboardCommandOverride` in `play.py` provides numpad 8/2=vel_x, 4/6=vel_y, 7/9=yaw, +/-=height, 5=zero vel (with exponential decay), 0=reset height. Velocity adjustments are instant; zeroing uses decay toward zero (~1s time constant at 50Hz). Monkey-patches `compute()` on twist and base_height command terms.
+
+### Play Mode Config Restoration
+
+When playing a trained policy, `scripts/play.py` restores training-time env config from saved params so the policy sees the same observation distribution it was trained on.
+
+**`_extract_scalar_overrides`** (duplicated in `train.py` and `tune.py`): Recursively extracts only scalar values (int/float/bool/str/None/Enum) plus simple dicts/lists from `asdict(env_cfg)`. No depth limit — reaches observation term params nested 5+ levels deep. Saved as `env_overrides.yaml` alongside `env.yaml` and `agent.yaml`.
+
+**`_load_params_overrides`** (`play.py`): Prefers `env_overrides.yaml` (clean YAML, `safe_load`-able). Falls back to `env.yaml` with Python tag stripping. Auto-detected from checkpoint `log_dir/params/`, overridable via `--params_dir`.
+
+**`_apply_env_overrides`** (`play.py`): Restores saved scalar params into play-time `env_cfg`, printing diffs for each changed field. Covers: top-level scalars (decimation, seed), observation group/term `history_length`, observation term `params` (scalar-only — structured objects like `SceneEntityCfg` are skipped since they lose their type when round-tripped through YAML), sim timestep, and action scale dicts. Uses `_check_and_set` pattern: compares current vs saved, prints diff, only sets if different.
+
+**`applied_params` dedup**: Because `critic_terms = {**actor_terms, ...}` creates shallow copies sharing the same `ObservationTermCfg` objects, the restore loop tracks `(id(term_obj), param_key)` tuples to avoid re-processing the same term twice (which would cause the critic group to overwrite the actor group's changes).
 
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
