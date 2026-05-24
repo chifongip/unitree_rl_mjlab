@@ -76,7 +76,7 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "phase": ObservationTermCfg(
       func=mdp.phase,
-      params={"period": 0.6, "command_name": "twist"},
+      params={"period": 0.9, "command_name": "twist"},
     ),
     "joint_pos": ObservationTermCfg(
       func=mdp.joint_pos_rel,
@@ -349,7 +349,7 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       func=mdp.feet_gait,
       weight=0.5,
       params={
-        "period": 0.6,
+        "period": 0.9,
         "offset": [0.0, 0.5],
         "threshold": 0.56,
         "command_threshold": 0.1,
@@ -364,6 +364,17 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "target_height": 0.10,
         "command_name": "twist",
         "command_threshold": 0.1,
+        "asset_cfg": SceneEntityCfg("robot", site_names=()),  # Set per-robot.
+      },
+    ),
+    "foot_swing_height": RewardTermCfg(
+      func=mdp.feet_swing_height,
+      weight=-1.0,
+      params={
+        "target_height": 0.08,
+        "command_name": "twist",
+        "command_threshold": 0.1,
+        "sensor_name": "feet_ground_contact",
         "asset_cfg": SceneEntityCfg("robot", site_names=()),  # Set per-robot.
       },
     ),

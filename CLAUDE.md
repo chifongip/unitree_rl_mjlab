@@ -124,6 +124,8 @@ Policy controls 12 lower-body joints only; upper body (17 DOF) driven by ACCAD m
 
 **`self_collision_cost`**: Penalizes pelvis self-collisions using a `ContactSensor` with force history (`history_length=4`). Counts substeps where any contact force exceeds 10N.
 
+**`foot_swing_height`** (class-based): Tracks peak foot height during each swing phase and penalizes deviation from `target_height` at landing (`first_contact`). Unlike `feet_clearance` (velocity-weighted, negligible at low speeds), this provides a speed-independent signal that fires at every landing. Stateful — maintains `peak_heights` tensor, cleared via `reset()` at episode boundaries. Monitor `Metrics/peak_height_mean` during training.
+
 External force curriculum (`HandForceEvent`) applies random wrenches to end-effectors to simulate carrying objects. Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`). Per-env Dirichlet axis scaling for force diversity. Config in `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]`.
 
 Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table (7 entries, 0.50m–0.785m) computed via `scripts/compute_height_postures.py` (IK solver + scipy optimization). Curriculum: `height_scale_staged` ramps `height_scale` from 0 to 1. Both `variable_posture` and `stand_still` look up target joint angles from this table.
