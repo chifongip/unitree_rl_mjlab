@@ -308,7 +308,13 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
     "body_orientation_l2": RewardTermCfg(
       func=mdp.body_orientation_l2,
       weight=-1.0,
-      params={"asset_cfg": SceneEntityCfg("robot", body_names=())},  # Set per-robot.
+      params={
+        "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+        "standing_command_name": "twist",
+        "standing_threshold": 0.1,
+        "standing_weight": 2.0,
+        "walking_weight": 1.0,
+      },
     ),
     "pose": RewardTermCfg(
       func=mdp.variable_posture,

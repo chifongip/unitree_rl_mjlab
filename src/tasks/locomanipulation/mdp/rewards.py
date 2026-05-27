@@ -98,11 +98,18 @@ def track_base_height(
 def body_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  standing_command_name: str | None = None,
+  standing_threshold: float = 0.1,
+  standing_weight: float = 1.0,
+  walking_weight: float = 1.0,
 ) -> torch.Tensor:
   """Reward flat base orientation (robot being upright).
 
   If asset_cfg has body_ids specified, computes the projected gravity
   for that specific body. Otherwise, uses the root link projected gravity.
+
+  Optionally applies different weights for standing vs walking, gated by
+  the twist command magnitude (consistent with track_base_height).
   """
   asset: Entity = env.scene[asset_cfg.name]
 
@@ -116,6 +123,14 @@ def body_orientation_l2(
   else:
     # Use root link projected gravity.
     xy_squared = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+  if standing_command_name is not None:
+    twist_cmd = env.command_manager.get_command(standing_command_name)
+    assert twist_cmd is not None, f"Command '{standing_command_name}' not found."
+    total_command = torch.norm(twist_cmd[:, :2], dim=1) + torch.abs(twist_cmd[:, 2])
+    is_standing = (total_command < standing_threshold).float()
+    weight = is_standing * standing_weight + (1.0 - is_standing) * walking_weight
+    return xy_squared * weight
   return xy_squared
 
 
