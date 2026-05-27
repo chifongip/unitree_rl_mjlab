@@ -95,6 +95,34 @@ models:
 
 **Performance**: Velocity combos are parallelized — envs are partitioned into groups (one per combo) with per-env commands on `vel_command_b`, so all combos run in a single episode batch. `num_envs` is auto-adjusted to be divisible by the number of combos (rounded down, minimum 1 env/combo). Force/pose remain sequential (global config mutation). Viewer mode uses the same partitioning; switch between combos with `,`/`.` keys. Progress bar via tqdm.
 
+### Export ONNX
+```bash
+# Velocity task
+python scripts/export_onnx.py Unitree-G1-Flat \
+    --checkpoint-file logs/rsl_rl/g1_velocity/<date>/model_<iter>.pt
+
+# Locomanipulation task
+python scripts/export_onnx.py Unitree-G1-Locomanipulation-Flat \
+    --checkpoint-file logs/.../model_20000.pt
+
+# Tracking task (also exports motion-bundled ONNX)
+python scripts/export_onnx.py Unitree-G1-Tracking-No-State-Estimation \
+    --checkpoint-file logs/.../model_<iter>.pt \
+    --motion-file src/assets/motions/g1/dance1_subject2.npz
+
+# Custom output directory
+python scripts/export_onnx.py Unitree-G1-Flat \
+    --checkpoint-file logs/.../model_<iter>.pt --output-dir /tmp/export
+```
+
+Exports a trained checkpoint to `policy.onnx` with metadata (joint names, PD gains, action scales, obs normalizer stats baked in). Output goes to the checkpoint's directory by default. For tracking tasks, also exports a motion-bundled ONNX with reference data. Uses `play=True` env config and restores training-time params from the checkpoint's `params/` dir.
+
+**Key flags:**
+- `--checkpoint-file <pt>`: Path to `.pt` checkpoint (required)
+- `--output-dir <dir>`: Output directory (default: checkpoint's directory)
+- `--motion-file <npz>`: Motion file for tracking tasks
+- `--device <str>`: `cpu` (default) or `cuda:0`
+
 ### Compute Height Postures (Locomanipulation)
 ```bash
 python scripts/compute_height_postures.py
@@ -204,6 +232,9 @@ When playing a trained policy, `scripts/play.py` restores training-time env conf
 
 ### Custom Runners
 `src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `MotionTrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment.
+
+### ONNX Export
+Training runners auto-export `policy.onnx` on every `save()` call. `scripts/export_onnx.py` provides standalone export for any checkpoint. Both paths call `runner.export_policy_to_onnx()` (opset 18, `dynamo=False`) which wraps the actor in `_OnnxMLPModel` — this bakes the obs normalizer (`_mean`, `_std`) and deterministic action output into the graph as constants. Metadata (joint names, PD gains, action scales) is attached via `get_base_metadata()` + `attach_metadata_to_onnx()`. For tracking tasks, `MotionTrackingOnPolicyRunner` also exports a motion-bundled ONNX with reference data as registered buffers.
 
 ### Deploy (C++)
 `deploy/robots/<robot>/` — C++ control binaries using ONNX Runtime for inference, communicating via CycloneDDS/unitree_sdk2. FSM states in `deploy/include/FSM/`.
