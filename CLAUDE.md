@@ -57,6 +57,44 @@ python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --viewer viser
 | KP_5 | zero all velocity | — |
 | KP_0 | reset height to nominal | — |
 
+### Evaluation
+```bash
+# Single checkpoint
+python scripts/eval.py Unitree-G1-Locomanipulation-Flat \
+    --checkpoint-file logs/.../model_20000.pt
+
+# Multi-model comparison via YAML config
+python scripts/eval.py Unitree-G1-Locomanipulation-Flat \
+    --eval-config eval_config.yaml
+
+# Visual verification with viewer
+python scripts/eval.py Unitree-G1-Locomanipulation-Flat \
+    --eval-config eval_config.yaml --viewer native
+```
+
+Computes velocity tracking MAE per (model, force_level), averaged across all (pose, velocity) combos. Outputs CSV + JSON + comparison plot (force vs error, one curve per model).
+
+**Key flags:**
+- `--eval-config <yaml>`: Multi-checkpoint config (see format below)
+- `--checkpoint-file <pt>`: Single checkpoint (ignored if `--eval-config` set)
+- `--force-conditions`: Force presets to test (`"none"`, `"medium"` (-15N), `"large"` (-30N))
+- `--body-poses`: Pose presets (`"neutral"` = default joint pos, `"zero"` = explicit zeros)
+- `--vel-x`, `--vel-y`, `--ang-z`: Velocity command sweeps (Python tuple syntax)
+- `--episode-steps`: Steps per combo (default 1000)
+- `--metric`: `"combined"` (default), `"linear"`, or `"angular"`
+- `--viewer`: `"none"` (default) or `"native"` (opens GLFW window)
+
+**Config file format** (`eval_config.yaml`):
+```yaml
+models:
+  - name: "20k"
+    checkpoint: "logs/.../model_20000.pt"
+  - name: "30k"
+    checkpoint: "logs/.../model_30000.pt"
+```
+
+**Performance**: Velocity combos are parallelized — envs are partitioned into groups (one per combo) with per-env commands on `vel_command_b`, so all combos run in a single episode batch. `num_envs` is auto-adjusted to be divisible by the number of combos (rounded down, minimum 1 env/combo). Force/pose remain sequential (global config mutation). Viewer mode uses the same partitioning; switch between combos with `,`/`.` keys. Progress bar via tqdm.
+
 ### Compute Height Postures (Locomanipulation)
 ```bash
 python scripts/compute_height_postures.py
