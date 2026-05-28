@@ -20,6 +20,7 @@ from .unitree_g1.g1_constants import (
 
 from .unitree_g1.g1_23dof_constants import (
   G1_23DOF_ACTION_SCALE as G1_23DOF_ACTION_SCALE,
+  G1_23DOF_GAIN_PRESETS as G1_23DOF_GAIN_PRESETS,
 )
 from .unitree_g1.g1_23dof_constants import (
   get_g1_23dof_robot_cfg as get_g1_23dof_robot_cfg,

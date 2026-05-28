@@ -4,7 +4,6 @@ import math
 import re
 
 from src.assets.robots import get_g1_23dof_robot_cfg
-from src.assets.robots.unitree_g1.g1_23dof_constants import G1_23DOF_ACTION_SCALE
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -52,10 +51,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     "right_ankle_roll_joint",
   )
 
-  cfg.scene.entities = {"robot": get_g1_23dof_robot_cfg()}
+  robot_cfg, action_scale = get_g1_23dof_robot_cfg(preset="unitree_stiff")
+  cfg.scene.entities = {"robot": robot_cfg}
   lower_body_action_scale = {
     pat: val
-    for pat, val in G1_23DOF_ACTION_SCALE.items()
+    for pat, val in action_scale.items()
     if any(re.fullmatch(pat, jn) for jn in LOWER_BODY_JOINT_NAMES)
   }
 
@@ -114,7 +114,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
 
   # Upper-body motion playback from ACCAD dataset.
   # motion_dof_indices remaps 29-DOF motion data to 23-DOF joint layout.
-  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "accad_all.pkl")
+  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "accad_all_g1_23dof_clean.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
@@ -227,6 +227,13 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.5)
   cfg.rewards["track_angular_velocity"].params["ang_vel_xy_weight"] = 0.05
   cfg.rewards["stand_still"].params["command_threshold"] = 0.1
+
+  # TODO: Hyperparameters
+  cfg.observations["actor"].terms["phase"].params["period"] = 0.6
+  cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
+  cfg.rewards["body_orientation_l2"].params["standing_weight"] = 1.5
+  cfg.rewards["leg_joint_vel_penalty"].weight = -2.0e-3
+  cfg.rewards["foot_gait"].params["period"] = 0.6
 
   # Restrict pose reward to lower-body joints only.
   cfg.rewards["pose"].params["asset_cfg"] = SceneEntityCfg(
@@ -359,6 +366,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_swing_height"].params["asset_cfg"].site_names = site_names
+  cfg.rewards["foot_swing_height"].weight = 0.0
   cfg.rewards["self_collisions"] = RewardTermCfg(
     func=mdp.self_collision_cost,
     weight=-1.0,

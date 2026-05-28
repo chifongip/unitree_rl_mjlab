@@ -131,45 +131,92 @@ DAMPING_7520_14 = 2.0 * DAMPING_RATIO * ARMATURE_7520_14 * NATURAL_FREQ
 DAMPING_7520_22 = 2.0 * DAMPING_RATIO * ARMATURE_7520_22 * NATURAL_FREQ
 DAMPING_4010 = 2.0 * DAMPING_RATIO * ARMATURE_4010 * NATURAL_FREQ
 
-G1_ACTUATOR_5020 = BuiltinPositionActuatorCfg(
-  target_names_expr=(
-    ".*_elbow_joint",
-    ".*_shoulder_pitch_joint",
-    ".*_shoulder_roll_joint",
-    ".*_shoulder_yaw_joint",
-    ".*_wrist_roll_joint",
-  ),
-  stiffness=STIFFNESS_5020,
-  damping=DAMPING_5020,
-  effort_limit=ACTUATOR_5020.effort_limit,
-  armature=ACTUATOR_5020.reflected_inertia,
-)
-G1_ACTUATOR_7520_14 = BuiltinPositionActuatorCfg(
-  target_names_expr=(".*_hip_pitch_joint", ".*_hip_yaw_joint", "waist_yaw_joint"),
-  stiffness=STIFFNESS_7520_14,
-  damping=DAMPING_7520_14,
-  effort_limit=ACTUATOR_7520_14.effort_limit,
-  armature=ACTUATOR_7520_14.reflected_inertia,
-)
-G1_ACTUATOR_7520_22 = BuiltinPositionActuatorCfg(
-  target_names_expr=(".*_hip_roll_joint", ".*_knee_joint"),
-  stiffness=STIFFNESS_7520_22,
-  damping=DAMPING_7520_22,
-  effort_limit=ACTUATOR_7520_22.effort_limit,
-  armature=ACTUATOR_7520_22.reflected_inertia,
-)
+# Motor config per joint pattern: (effort_limit, armature).
+# 4-bar linkage joints (ankles) use doubled values.
+# 23-DOF omits: waist_roll, waist_pitch, wrist_pitch, wrist_yaw.
+_G1_23DOF_MOTOR_CFGS: dict[str, tuple[float, float]] = {
+  ".*_hip_pitch_joint": (ACTUATOR_7520_14.effort_limit, ACTUATOR_7520_14.reflected_inertia),
+  ".*_hip_roll_joint": (ACTUATOR_7520_22.effort_limit, ACTUATOR_7520_22.reflected_inertia),
+  ".*_hip_yaw_joint": (ACTUATOR_7520_14.effort_limit, ACTUATOR_7520_14.reflected_inertia),
+  ".*_knee_joint": (ACTUATOR_7520_22.effort_limit, ACTUATOR_7520_22.reflected_inertia),
+  ".*_ankle_pitch_joint": (ACTUATOR_5020.effort_limit * 2, ACTUATOR_5020.reflected_inertia * 2),
+  ".*_ankle_roll_joint": (ACTUATOR_5020.effort_limit * 2, ACTUATOR_5020.reflected_inertia * 2),
+  "waist_yaw_joint": (ACTUATOR_7520_14.effort_limit, ACTUATOR_7520_14.reflected_inertia),
+  ".*_shoulder_pitch_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
+  ".*_shoulder_roll_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
+  ".*_shoulder_yaw_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
+  ".*_elbow_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
+  ".*_wrist_roll_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
+}
 
-# Ankles are 4-bar linkages with 2 5020 actuators.
-# Due to the parallel linkage, the effective armature at the ankle and waist joints
-# is configuration dependent. Since the exact geometry of the linkage is unknown, we
-# assume a nominal 1:1 gear ratio. Under this assumption, the joint armature in the
-# nominal configuration is approximated as the sum of the 2 actuators' armatures.
-G1_ACTUATOR_ANKLE = BuiltinPositionActuatorCfg(
-  target_names_expr=(".*_ankle_pitch_joint", ".*_ankle_roll_joint"),
-  stiffness=STIFFNESS_5020 * 2,
-  damping=DAMPING_5020 * 2,
-  effort_limit=ACTUATOR_5020.effort_limit * 2,
-  armature=ACTUATOR_5020.reflected_inertia * 2,
+# Named gain presets: joint_pattern -> (stiffness, damping).
+G1_23DOF_GAIN_PRESETS: dict[str, dict[str, tuple[float, float]]] = {
+  "default": {
+    ".*_hip_pitch_joint": (STIFFNESS_7520_14, DAMPING_7520_14),
+    ".*_hip_roll_joint": (STIFFNESS_7520_22, DAMPING_7520_22),
+    ".*_hip_yaw_joint": (STIFFNESS_7520_14, DAMPING_7520_14),
+    ".*_knee_joint": (STIFFNESS_7520_22, DAMPING_7520_22),
+    ".*_ankle_pitch_joint": (STIFFNESS_5020 * 2, DAMPING_5020 * 2),
+    ".*_ankle_roll_joint": (STIFFNESS_5020 * 2, DAMPING_5020 * 2),
+    "waist_yaw_joint": (STIFFNESS_7520_14, DAMPING_7520_14),
+    ".*_shoulder_pitch_joint": (STIFFNESS_5020, DAMPING_5020),
+    ".*_shoulder_roll_joint": (STIFFNESS_5020, DAMPING_5020),
+    ".*_shoulder_yaw_joint": (STIFFNESS_5020, DAMPING_5020),
+    ".*_elbow_joint": (STIFFNESS_5020, DAMPING_5020),
+    ".*_wrist_roll_joint": (STIFFNESS_5020, DAMPING_5020),
+  },
+  "unitree": {
+    ".*_hip_pitch_joint": (100, 2.5),
+    ".*_hip_roll_joint": (100, 2.5),
+    ".*_hip_yaw_joint": (100, 2.5),
+    ".*_knee_joint": (200, 5.0),
+    ".*_ankle_pitch_joint": (20, 0.2),
+    ".*_ankle_roll_joint": (20, 0.1),
+    "waist_yaw_joint": (200, 5.0),
+    ".*_shoulder_pitch_joint": (90, 2.0),
+    ".*_shoulder_roll_joint": (60, 1.0),
+    ".*_shoulder_yaw_joint": (20, 0.4),
+    ".*_elbow_joint": (60, 1.0),
+    ".*_wrist_roll_joint": (4, 0.2),
+  },
+  "unitree_stiff": {
+    ".*_hip_pitch_joint": (100, 2.5),
+    ".*_hip_roll_joint": (100, 2.5),
+    ".*_hip_yaw_joint": (100, 2.5),
+    ".*_knee_joint": (200, 5.0),
+    ".*_ankle_pitch_joint": (20, 0.2),
+    ".*_ankle_roll_joint": (20, 0.1),
+    "waist_yaw_joint": (200, 5.0),
+    ".*_shoulder_pitch_joint": (60, 1.5),
+    ".*_shoulder_roll_joint": (60, 1.5),
+    ".*_shoulder_yaw_joint": (60, 1.5),
+    ".*_elbow_joint": (60, 1.5),
+    ".*_wrist_roll_joint": (60, 1.5),
+  },
+}
+
+
+def _make_g1_23dof_actuators_and_scale(
+  gains: dict[str, tuple[float, float]],
+) -> tuple[tuple[BuiltinPositionActuatorCfg, ...], dict[str, float]]:
+  """Build actuator configs and action scale from per-joint gains."""
+  actuators: list[BuiltinPositionActuatorCfg] = []
+  scale: dict[str, float] = {}
+  for pattern, (stiffness, damping) in gains.items():
+    effort_limit, armature = _G1_23DOF_MOTOR_CFGS[pattern]
+    actuators.append(BuiltinPositionActuatorCfg(
+      target_names_expr=(pattern,),
+      stiffness=stiffness,
+      damping=damping,
+      effort_limit=effort_limit,
+      armature=armature,
+    ))
+    scale[pattern] = 0.25 * effort_limit / stiffness
+  return tuple(actuators), scale
+
+
+_DEFAULT_ACTUATORS, G1_23DOF_ACTION_SCALE = _make_g1_23dof_actuators_and_scale(
+  G1_23DOF_GAIN_PRESETS["default"]
 )
 
 ##
@@ -244,39 +291,32 @@ FEET_ONLY_COLLISION = CollisionCfg(
 ##
 
 G1_23DOF_ARTICULATION = EntityArticulationInfoCfg(
-  actuators=(
-    G1_ACTUATOR_5020,
-    G1_ACTUATOR_7520_14,
-    G1_ACTUATOR_7520_22,
-    G1_ACTUATOR_ANKLE,
-  ),
+  actuators=_DEFAULT_ACTUATORS,
   soft_joint_pos_limit_factor=0.9,
 )
 
 
-def get_g1_23dof_robot_cfg() -> EntityCfg:
-  """Get a fresh G1_23DOF robot configuration instance.
+def get_g1_23dof_robot_cfg(
+  preset: str = "default",
+) -> tuple[EntityCfg, dict[str, float]]:
+  """Get a G1_23DOF robot configuration with the named gain preset.
 
-  Returns a new EntityCfg instance each time to avoid mutation issues when
-  the config is shared across multiple places.
+  Returns:
+    (entity_cfg, action_scale) — both fresh instances.
   """
-  return EntityCfg(
+  gains = G1_23DOF_GAIN_PRESETS[preset]
+  actuators, action_scale = _make_g1_23dof_actuators_and_scale(gains)
+  articulation = EntityArticulationInfoCfg(
+    actuators=actuators,
+    soft_joint_pos_limit_factor=0.9,
+  )
+  entity_cfg = EntityCfg(
     init_state=HOME_KEYFRAME,
     collisions=(FULL_COLLISION,),
     spec_fn=get_spec,
-    articulation=G1_23DOF_ARTICULATION,
+    articulation=articulation,
   )
-
-
-G1_23DOF_ACTION_SCALE: dict[str, float] = {}
-for a in G1_23DOF_ARTICULATION.actuators:
-  assert isinstance(a, BuiltinPositionActuatorCfg)
-  e = a.effort_limit
-  s = a.stiffness
-  names = a.target_names_expr
-  assert e is not None
-  for n in names:
-    G1_23DOF_ACTION_SCALE[n] = 0.25 * e / s
+  return entity_cfg, action_scale
 
 
 if __name__ == "__main__":
@@ -284,6 +324,7 @@ if __name__ == "__main__":
 
   from mjlab.entity.entity import Entity
 
-  robot = Entity(get_g1_23dof_robot_cfg())
+  robot_cfg, _ = get_g1_23dof_robot_cfg()
+  robot = Entity(robot_cfg)
 
   viewer.launch(robot.spec.compile())

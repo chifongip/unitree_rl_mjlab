@@ -1,7 +1,6 @@
 """Unitree G1-23DOF velocity environment configurations."""
 
 from src.assets.robots import (
-  G1_23DOF_ACTION_SCALE,
   get_g1_23dof_robot_cfg,
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -23,7 +22,8 @@ def unitree_g1_23dof_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.sim.contact_sensor_maxmatch = 500
   cfg.sim.nconmax = 48
 
-  cfg.scene.entities = {"robot": get_g1_23dof_robot_cfg()}
+  robot_cfg, action_scale = get_g1_23dof_robot_cfg()
+  cfg.scene.entities = {"robot": robot_cfg}
 
   # Set raycast sensor frame to G1-23DOF pelvis.
   for sensor in cfg.scene.sensors or ():
@@ -68,7 +68,7 @@ def unitree_g1_23dof_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
-  joint_pos_action.scale = G1_23DOF_ACTION_SCALE
+  joint_pos_action.scale = action_scale
 
   cfg.viewer.body_name = "torso_link"
 

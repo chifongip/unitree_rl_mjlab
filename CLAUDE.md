@@ -28,6 +28,9 @@ python scripts/train.py Unitree-G1-Tracking-No-State-Estimation --motion_file=sr
 
 # Locomanipulation (lower-body policy + upper-body motion playback)
 python scripts/train.py Unitree-G1-Locomanipulation-Flat --env.scene.num-envs=4096
+
+# Locomanipulation G1-23DOF
+python scripts/train.py Unitree-G1-23Dof-Locomanipulation-Flat --env.scene.num-envs=4096
 ```
 
 ### Play / Visualization
@@ -134,6 +137,35 @@ Computes IK-based joint postures for G1 at different standing heights (0.50m–0
 python scripts/csv_to_npz.py --input-file src/assets/motions/g1/dance1.csv --output-name dance1.npz --input-fps 30 --output-fps 50 --robot g1
 ```
 
+### Check Motion Collisions (Locomanipulation)
+```bash
+# 23-DOF headless scan (default)
+python scripts/check_motion_collisions.py
+
+# 29-DOF headless scan
+python scripts/check_motion_collisions.py --robot g1
+
+# Visual playback
+python scripts/check_motion_collisions.py --show
+
+# Remove collision frames and save cleaned data
+python scripts/check_motion_collisions.py --robot g1_23dof --clean
+python scripts/check_motion_collisions.py --robot g1 --clean
+
+# Verify cleaned data
+python scripts/check_motion_collisions.py --motion-file src/assets/data/g1/accad_all_g1_23dof_clean.pkl
+```
+
+Checks self-collision statistics for ACCAD motion data on the G1 robot. Supports both 29-DOF and 23-DOF variants. The `--clean` flag removes collision frames and saves a cleaned pkl file. Use `--show` for visual playback with MuJoCo viewer (enable contacts via viewer menu → Rendering → Contacts).
+
+**Key flags:**
+- `--robot`: `g1_23dof` (default) or `g1`
+- `--motion-file`: Path to motion pkl (default: `accad_all.pkl`)
+- `--show`: Open MuJoCo viewer
+- `--clip`: Filter to clips matching substring
+- `--collision-only`: Only show collision frames (with `--show`)
+- `--clean`: Save cleaned motion data
+
 ### Deploy (C++ on real robot or unitree_mujoco simulator)
 ```bash
 # Install C++ build dependencies (Ubuntu)
@@ -178,7 +210,9 @@ Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.md
 
 ### Locomanipulation Summary
 
-Policy controls 12 lower-body joints only; upper body (17 DOF) driven by ACCAD motion data via `UpperBodyMotionAction`. Two modes: pose-only (sample frame at reset, hold) and clip playback (frame-by-frame). `waist_yaw_only=True` zeros out waist_roll/pitch from motion data. `default_pose_ratio` curriculum (`default_pose_ratio_staged`) gradually introduces diverse upper-body poses during training. `fixed_upper_body_pose` (play mode) pins all envs to a specific upper-body joint configuration.
+Policy controls 12 lower-body joints only; upper body driven by ACCAD motion data via `UpperBodyMotionAction`. Supports both G1 29-DOF (17 upper-body DOFs) and G1 23-DOF (11 upper-body DOFs). Two modes: pose-only (sample frame at reset, hold) and clip playback (frame-by-frame). `waist_yaw_only=True` zeros out waist_roll/pitch from motion data. `default_pose_ratio` curriculum (`default_pose_ratio_staged`) gradually introduces diverse upper-body poses during training. `fixed_upper_body_pose` (play mode) pins all envs to a specific upper-body joint configuration.
+
+**G1-23DOF specifics**: Uses `motion_dof_indices` to remap 29-DOF motion data columns to 23-DOF joint layout. Wrist body names are `wrist_roll_rubber_hand` (not `wrist_yaw_link`). Symmetry uses `G1_23DOFSymmetry` with 23-joint swap/flip mappings. Cleaned motion data (`accad_all_g1_23dof_clean.pkl`) removes frames with self-collisions. Gain presets (`G1_23DOF_GAIN_PRESETS`) support "default", "unitree", "unitree_stiff".
 
 **Rewards restricted to lower-body joints** (matching policy control): `pose` (variable_posture), `stand_still`, `joint_acc_l2`, `joint_pos_limits`, `leg_joint_vel_penalty`. Full-body rewards (policy compensates via hips): `body_orientation_l2`, `body_ang_vel`, `angular_momentum`.
 
@@ -233,7 +267,7 @@ When playing a trained policy, `scripts/play.py` restores training-time env conf
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
 
 ### Custom Runners
-`src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `MotionTrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment.
+`src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `MotionTrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment. `G1_23DOF_LocomanipulationOnPolicyRunner` overrides the symmetry function for 23-DOF.
 
 ### ONNX Export
 Training runners auto-export `policy.onnx` on every `save()` call. `scripts/export_onnx.py` provides standalone export for any checkpoint. Both paths call `runner.export_policy_to_onnx()` (opset 18, `dynamo=False`) which wraps the actor in `_OnnxMLPModel` — this bakes the obs normalizer (`_mean`, `_std`) and deterministic action output into the graph as constants. Metadata (joint names, PD gains, action scales) is attached via `get_base_metadata()` + `attach_metadata_to_onnx()`. For tracking tasks, `MotionTrackingOnPolicyRunner` also exports a motion-bundled ONNX with reference data as registered buffers.
@@ -257,7 +291,7 @@ Both `train.py` and `play.py` use [tyro](https://github.com/brentyi/tyro) for CL
 
 ## Testing / Linting
 No CI or linting configuration exists. Mock tests verify correctness:
-- `tests/test_symmetry.py` — symmetry augmentation (joint swaps, sign flips, batch doubling). Run with `python -m pytest tests/test_symmetry.py -p no:launch_testing`.
+- `tests/test_symmetry.py` — symmetry augmentation (joint swaps, sign flips, batch doubling, history-aware mirroring) for both 29-DOF and 23-DOF. Run with `PYTHONPATH="" python -m pytest tests/test_symmetry.py -v`.
 - `tests/test_max_force_estimator.py` — Jacobian-based force estimation (mock + G1 integration). Run with `python tests/test_max_force_estimator.py`.
 
 pytest has ROS plugin conflicts — run tests directly or use `python -m pytest -p no:launch_testing`.
