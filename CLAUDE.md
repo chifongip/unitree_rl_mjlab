@@ -186,6 +186,8 @@ Policy controls 12 lower-body joints only; upper body (17 DOF) driven by ACCAD m
 
 **`stand_still`**: Penalizes joint deviation from target pose only when velocity command magnitude < `command_threshold`. Also supports `height_postures` lookup. Works with `leg_joint_vel_penalty` (damps joint velocities when standing) and `body_orientation_l2` for standing stability.
 
+**`body_orientation_l2`**: L2 penalty on projected gravity xy (upright orientation). Optionally applies different weights for standing vs walking, gated by twist command magnitude via `standing_command_name`/`standing_threshold`/`standing_weight`/`walking_weight` (same pattern as `track_base_height`). Default: 3x penalty when stationary, 1x when walking.
+
 **`track_base_height`**: Gaussian reward `exp(-(cmd_z - actual_z)^2 / std^2)` multiplied by per-env weight: `standing_weight` (default 1.0) when `|twist_cmd| < 0.1`, `walking_weight` (default 0.5) otherwise.
 
 **`self_collision_cost`**: Penalizes pelvis self-collisions using a `ContactSensor` with force history (`history_length=4`). Counts substeps where any contact force exceeds 10N.
