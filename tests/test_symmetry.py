@@ -15,14 +15,18 @@ from tensordict import TensorDict
 
 from src.tasks.locomanipulation.mdp.symmetry import (
   G1Symmetry,
+  G1_23DOFSymmetry,
   _JOINT_SWAP_PARTNERS,
+  _JOINT_SWAP_PARTNERS_23DOF,
   _NegateIndices,
   _SIGN_FLIP_JOINTS,
+  _SIGN_FLIP_JOINTS_23DOF,
   _SwapAndFlipJoints,
   _SwapFootForces,
   _SwapFootValues,
   _SwapWristForces,
   g1_locomanipulation_symmetry,
+  g1_23dof_locomanipulation_symmetry,
 )
 
 
@@ -64,7 +68,7 @@ class _MockEnv:
     return self
 
 
-# ── Actor observation layout ─────────────────────────────────────────────────
+# ── Actor observation layout (29-DOF) ─────────────────────────────────────────
 
 _ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "command", "phase",
                 "joint_pos", "joint_vel", "actions"]
@@ -76,6 +80,14 @@ _CRITIC_EXTRA_DIMS = [3, 2, 2, 2, 6, 6]
 
 _CRITIC_TERMS = _ACTOR_TERMS + _CRITIC_EXTRA_TERMS
 _CRITIC_DIMS = _ACTOR_DIMS + _CRITIC_EXTRA_DIMS  # total = 102
+
+# ── Actor observation layout (23-DOF) ─────────────────────────────────────────
+
+_ACTOR_TERMS_23DOF = list(_ACTOR_TERMS)
+_ACTOR_DIMS_23DOF = [3, 3, 3, 2, 23, 23, 12]  # total = 69
+
+_CRITIC_TERMS_23DOF = _ACTOR_TERMS_23DOF + list(_CRITIC_EXTRA_TERMS)
+_CRITIC_DIMS_23DOF = _ACTOR_DIMS_23DOF + list(_CRITIC_EXTRA_DIMS)  # total = 90
 
 
 def _make_mock_env() -> _MockEnv:
@@ -91,6 +103,21 @@ def _make_mock_env() -> _MockEnv:
 
 def _make_symmetry() -> G1Symmetry:
   return G1Symmetry(_make_mock_env())
+
+
+def _make_mock_env_23dof() -> _MockEnv:
+  actor_cfg = _MockGroupCfg({t: _MockTermCfg() for t in _ACTOR_TERMS_23DOF})
+  critic_cfg = _MockGroupCfg({t: _MockTermCfg() for t in _CRITIC_TERMS_23DOF})
+  obs_mgr = _MockObsManager(
+    group_term_names={"actor": list(_ACTOR_TERMS_23DOF), "critic": list(_CRITIC_TERMS_23DOF)},
+    group_term_dims={"actor": list(_ACTOR_DIMS_23DOF), "critic": list(_CRITIC_DIMS_23DOF)},
+    group_cfgs={"actor": actor_cfg, "critic": critic_cfg},
+  )
+  return _MockEnv(obs_mgr)
+
+
+def _make_symmetry_23dof() -> G1_23DOFSymmetry:
+  return G1_23DOFSymmetry(_make_mock_env_23dof())
 
 
 def _make_actor_obs(batch: int = 4) -> torch.Tensor:
@@ -109,6 +136,21 @@ def _make_actions(batch: int = 4) -> torch.Tensor:
 def _make_obs_td(batch: int = 4) -> TensorDict:
   return TensorDict(
     {"actor": _make_actor_obs(batch), "critic": _make_critic_obs(batch)},
+    batch_size=[batch],
+  )
+
+
+def _make_actor_obs_23dof(batch: int = 4) -> torch.Tensor:
+  return torch.randn(batch, sum(_ACTOR_DIMS_23DOF))
+
+
+def _make_critic_obs_23dof(batch: int = 4) -> torch.Tensor:
+  return torch.randn(batch, sum(_CRITIC_DIMS_23DOF))
+
+
+def _make_obs_td_23dof(batch: int = 4) -> TensorDict:
+  return TensorDict(
+    {"actor": _make_actor_obs_23dof(batch), "critic": _make_critic_obs_23dof(batch)},
     batch_size=[batch],
   )
 
@@ -397,6 +439,180 @@ class TestAugmentationFunction:
     assert torch.allclose(aug_actions2[:batch], actions, atol=1e-6)
 
 
+# ── Tests: G1 23-DOF symmetry ────────────────────────────────────────────────
+
+class TestJointSwapAndSign23DOF:
+  def test_swap_partners_symmetric(self):
+    for src, dst in _JOINT_SWAP_PARTNERS_23DOF.items():
+      assert _JOINT_SWAP_PARTNERS_23DOF[dst] == src, f"({src}, {dst}) not symmetric"
+
+  def test_all_23_joints_covered(self):
+    assert set(_JOINT_SWAP_PARTNERS_23DOF.keys()) == set(range(23))
+
+  def test_midline_identity(self):
+    """Only waist_yaw at index 12 is midline in 23-DOF."""
+    assert _JOINT_SWAP_PARTNERS_23DOF[12] == 12
+
+  def test_sign_flip_contains_roll_yaw_only(self):
+    roll_yaw_names = {
+      "hip_roll", "hip_yaw", "ankle_roll", "waist_yaw",
+      "shoulder_roll", "shoulder_yaw", "wrist_roll",
+    }
+    joint_names_23dof = [
+      "left_hip_pitch", "left_hip_roll", "left_hip_yaw", "left_knee",
+      "left_ankle_pitch", "left_ankle_roll",
+      "right_hip_pitch", "right_hip_roll", "right_hip_yaw", "right_knee",
+      "right_ankle_pitch", "right_ankle_roll",
+      "waist_yaw",
+      "left_shoulder_pitch", "left_shoulder_roll", "left_shoulder_yaw",
+      "left_elbow", "left_wrist_roll",
+      "right_shoulder_pitch", "right_shoulder_roll", "right_shoulder_yaw",
+      "right_elbow", "right_wrist_roll",
+    ]
+    for idx, name in enumerate(joint_names_23dof):
+      parts = name.split("_")
+      suffix = "_".join(parts[1:]) if parts[0] in ("left", "right") else name
+      should_flip = any(s in suffix for s in ("roll", "yaw"))
+      assert (idx in _SIGN_FLIP_JOINTS_23DOF) == should_flip, (
+        f"Joint {idx} ({name}): expected flip={should_flip}, got {idx in _SIGN_FLIP_JOINTS_23DOF}"
+      )
+
+
+class TestActionMirror23DOF:
+  def test_swap_left_right(self):
+    sym = _make_symmetry_23dof()
+    actions = torch.zeros(1, 12)
+    actions[0, :6] = torch.arange(6, dtype=torch.float)
+    actions[0, 6:] = torch.arange(6, 12, dtype=torch.float)
+    mirrored = sym.mirror_actions(actions)
+    for i in range(6):
+      j = i + 6
+      expected = actions[0, j].item()
+      if i in _SIGN_FLIP_JOINTS_23DOF:
+        expected = -expected
+      assert mirrored[0, i].item() == pytest.approx(expected)
+
+  def test_double_mirror_identity(self):
+    sym = _make_symmetry_23dof()
+    actions = _make_actions(batch=8)
+    mirrored = sym.mirror_actions(actions)
+    double_mirrored = sym.mirror_actions(mirrored)
+    assert torch.allclose(actions, double_mirrored, atol=1e-6)
+
+
+class TestObsMirror23DOF:
+  def test_actor_obs_shape_preserved(self):
+    sym = _make_symmetry_23dof()
+    obs = _make_actor_obs_23dof(batch=4)
+    mirrored = sym.mirror_obs(obs, "actor")
+    assert mirrored.shape == obs.shape
+
+  def test_critic_obs_shape_preserved(self):
+    sym = _make_symmetry_23dof()
+    obs = _make_critic_obs_23dof(batch=4)
+    mirrored = sym.mirror_obs(obs, "critic")
+    assert mirrored.shape == obs.shape
+
+  def test_joint_pos_segment_swap_23dof(self):
+    sym = _make_symmetry_23dof()
+    obs = torch.zeros(1, sum(_ACTOR_DIMS_23DOF))
+    # joint_pos offset: base_ang_vel(3) + projected_gravity(3) + command(3) + phase(2) = 11
+    jp_offset = 11
+    # Set left leg joints to 100+index, right leg to 200+index.
+    for i in range(6):
+      obs[0, jp_offset + i] = 100 + i
+      obs[0, jp_offset + 6 + i] = 200 + i
+    # Set waist_yaw to 300.
+    obs[0, jp_offset + 12] = 300.0
+
+    mirrored = sym.mirror_obs(obs, "actor")
+
+    # Check left-right swap for leg joints.
+    for i in range(6):
+      j = i + 6
+      expected = obs[0, jp_offset + j].item()
+      if i in _SIGN_FLIP_JOINTS_23DOF:
+        expected = -expected
+      assert mirrored[0, jp_offset + i].item() == pytest.approx(expected)
+
+    # waist_yaw (idx 12) is in sign flip set, so should be negated.
+    assert mirrored[0, jp_offset + 12].item() == pytest.approx(-300.0)
+
+  def test_double_mirror_actor_identity(self):
+    sym = _make_symmetry_23dof()
+    obs = _make_actor_obs_23dof(batch=8)
+    mirrored = sym.mirror_obs(obs, "actor")
+    double_mirrored = sym.mirror_obs(mirrored, "actor")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+  def test_double_mirror_critic_identity(self):
+    sym = _make_symmetry_23dof()
+    obs = _make_critic_obs_23dof(batch=8)
+    mirrored = sym.mirror_obs(obs, "critic")
+    double_mirrored = sym.mirror_obs(mirrored, "critic")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+
+class TestAugmentationFunction23DOF:
+  def test_batch_doubling_obs_and_actions(self):
+    env = _make_mock_env_23dof()
+    batch = 4
+    obs = _make_obs_td_23dof(batch)
+    actions = _make_actions(batch)
+    aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
+    assert aug_obs is not None
+    assert aug_actions is not None
+    assert aug_obs.batch_size[0] == batch * 2
+    assert aug_actions.shape[0] == batch * 2
+
+  def test_batch_doubling_obs_only(self):
+    env = _make_mock_env_23dof()
+    batch = 4
+    obs = _make_obs_td_23dof(batch)
+    aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, None)
+    assert aug_obs is not None
+    assert aug_actions is None
+    assert aug_obs.batch_size[0] == batch * 2
+
+  def test_batch_doubling_actions_only(self):
+    env = _make_mock_env_23dof()
+    batch = 4
+    actions = _make_actions(batch)
+    aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, None, actions)
+    assert aug_obs is None
+    assert aug_actions is not None
+    assert aug_actions.shape[0] == batch * 2
+
+  def test_original_preserved_in_first_half(self):
+    env = _make_mock_env_23dof()
+    batch = 4
+    obs = _make_obs_td_23dof(batch)
+    actions = _make_actions(batch)
+    aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
+    assert torch.allclose(aug_actions[:batch], actions, atol=1e-6)
+    for key in obs.keys():
+      assert torch.allclose(aug_obs[key][:batch], obs[key], atol=1e-6)
+
+  def test_mirrored_differs_from_original(self):
+    env = _make_mock_env_23dof()
+    batch = 4
+    obs = _make_obs_td_23dof(batch)
+    actions = _make_actions(batch)
+    aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
+    assert not torch.allclose(aug_actions[:batch], aug_actions[batch:], atol=1e-6)
+
+  def test_double_augment_identity(self):
+    env = _make_mock_env_23dof()
+    batch = 4
+    obs = _make_obs_td_23dof(batch)
+    actions = _make_actions(batch)
+    aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
+    aug_obs2, aug_actions2 = g1_23dof_locomanipulation_symmetry(env, aug_obs, aug_actions)
+    for key in obs.keys():
+      assert torch.allclose(aug_obs2[key][:batch], obs[key], atol=1e-6)
+    assert torch.allclose(aug_actions2[:batch], actions, atol=1e-6)
+
+
 # ── Tests: History-aware mirroring (history_length > 1) ─────────────────────
 
 _HISTORY_LEN = 4
@@ -424,6 +640,25 @@ def _make_mock_env_with_history() -> _MockEnv:
 
 def _make_symmetry_with_history() -> G1Symmetry:
   return G1Symmetry(_make_mock_env_with_history())
+
+
+def _make_mock_env_with_history_23dof() -> _MockEnv:
+  """Mock env where observation groups have history_length=4 (23-DOF)."""
+  actor_cfg = _MockGroupCfg(
+    {t: _MockTermCfg() for t in _ACTOR_TERMS_23DOF}, history_length=_HISTORY_LEN
+  )
+  critic_cfg = _MockGroupCfg(
+    {t: _MockTermCfg() for t in _CRITIC_TERMS_23DOF}, history_length=_HISTORY_LEN
+  )
+  obs_mgr = _MockObsManager(
+    group_term_names={"actor": list(_ACTOR_TERMS_23DOF), "critic": list(_CRITIC_TERMS_23DOF)},
+    group_term_dims={
+      "actor": [d * _HISTORY_LEN for d in _ACTOR_DIMS_23DOF],
+      "critic": [d * _HISTORY_LEN for d in _CRITIC_DIMS_23DOF],
+    },
+    group_cfgs={"actor": actor_cfg, "critic": critic_cfg},
+  )
+  return _MockEnv(obs_mgr)
 
 
 class TestHistoryNegateIndices:
@@ -569,3 +804,28 @@ class TestHistoryFullObsMirror:
       assert mirrored[0, f1 + i].item() == pytest.approx(expected), (
         f"frame1 joint_pos[{i}]"
       )
+
+
+class TestHistorySwapAndFlipJoints23DOF:
+  def test_double_mirror_identity_with_history(self):
+    m = _SwapAndFlipJoints(23, _JOINT_SWAP_PARTNERS_23DOF, _SIGN_FLIP_JOINTS_23DOF)
+    x = torch.randn(4, 23 * _HISTORY_LEN)
+    orig = x.clone()
+    m.apply(x, None, history_length=_HISTORY_LEN)
+    m.apply(x, None, history_length=_HISTORY_LEN)
+    assert torch.allclose(x, orig, atol=1e-6)
+
+
+class TestHistoryFullObsMirror23DOF:
+  def test_actor_obs_shape_preserved_with_history(self):
+    sym = G1_23DOFSymmetry(_make_mock_env_with_history_23dof())
+    obs = torch.randn(4, sum(d * _HISTORY_LEN for d in _ACTOR_DIMS_23DOF))
+    mirrored = sym.mirror_obs(obs, "actor")
+    assert mirrored.shape == obs.shape
+
+  def test_double_mirror_identity_with_history(self):
+    sym = G1_23DOFSymmetry(_make_mock_env_with_history_23dof())
+    obs = torch.randn(4, sum(d * _HISTORY_LEN for d in _ACTOR_DIMS_23DOF))
+    mirrored = sym.mirror_obs(obs, "actor")
+    double_mirrored = sym.mirror_obs(mirrored, "actor")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)

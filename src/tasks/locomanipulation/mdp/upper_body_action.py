@@ -57,24 +57,27 @@ class UpperBodyMotionAction(ActionTerm):
     else:
       self._waist_zero_cols = []
 
-    # Load motion data and extract upper-body DOF (indices 12-28 = 17 joints).
+    # Load motion data and extract upper-body DOF.
     data = joblib.load(cfg.motion_file)
     raw_clips: list[torch.Tensor] = []
     self._fps: int = 0
+    dof_indices = list(cfg.motion_dof_indices) if cfg.motion_dof_indices is not None else None
     for v in data.values():
       dof = torch.tensor(v["dof"], dtype=torch.float32)
-      raw_clips.append(dof[:, 12:29])
+      raw_clips.append(dof[:, dof_indices] if dof_indices is not None else dof[:, 12:29])
       self._fps = v["fps"]
+
+    self._num_upper_dofs = len(self._joint_ids)
 
     self._num_clips = len(raw_clips)
     self._step_dt = env.step_dt
 
-    # Pad all clips into a single tensor (num_clips, max_len, 17).
+    # Pad all clips into a single tensor (num_clips, max_len, num_upper_dofs).
     max_len = max(len(c) for c in raw_clips)
     self._clip_lengths = torch.tensor(
       [len(c) for c in raw_clips], dtype=torch.long, device=self.device
     )
-    self._clips = torch.zeros(self._num_clips, max_len, 17, device=self.device)
+    self._clips = torch.zeros(self._num_clips, max_len, self._num_upper_dofs, device=self.device)
     for i, clip in enumerate(raw_clips):
       self._clips[i, : len(clip)] = clip.to(self.device)
 
@@ -86,7 +89,7 @@ class UpperBodyMotionAction(ActionTerm):
     self._start_frame = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
     # Cached single-frame target for pose_only mode.
-    self._pose_target = torch.zeros(self.num_envs, 17, device=self.device)
+    self._pose_target = torch.zeros(self.num_envs, self._num_upper_dofs, device=self.device)
 
     # Build fixed pose target if specified.
     self._fixed_pose: torch.Tensor | None = None
@@ -103,7 +106,7 @@ class UpperBodyMotionAction(ActionTerm):
         fixed[matches[0]] = value
       if self._waist_zero_cols:
         fixed[self._waist_zero_cols] = 0.0
-      self._fixed_pose = fixed  # (17,)
+      self._fixed_pose = fixed  # (num_upper_dofs,)
 
   @property
   def action_dim(self) -> int:
@@ -200,7 +203,7 @@ class UpperBodyMotionAction(ActionTerm):
     Used by reset() to cache pose targets in pose_only mode.
     """
     safe_clip_idx = clip_idx.clamp(min=0)
-    targets = self._clips[safe_clip_idx, start_frame]  # (n, 17)
+    targets = self._clips[safe_clip_idx, start_frame]  # (n, num_upper_dofs)
     targets = torch.where((~use_default).unsqueeze(1), targets, default_pos)
     if self._waist_zero_cols:
       targets[:, self._waist_zero_cols] = 0.0
@@ -242,8 +245,8 @@ class UpperBodyMotionAction(ActionTerm):
     clip_lens = self._clip_lengths[safe_clip_idx]
     frame_idx = (start_frame + frame_offset) % clip_lens
 
-    # Look up targets from padded clip tensor: (num_clips, max_len, 17).
-    targets = self._clips[safe_clip_idx, frame_idx]  # (n, 17)
+    # Look up targets from padded clip tensor: (num_clips, max_len, num_upper_dofs).
+    targets = self._clips[safe_clip_idx, frame_idx]  # (n, num_upper_dofs)
 
     # Substitute default pose for non-motion envs.
     targets = torch.where(use_motion.unsqueeze(1), targets, default_pos)
@@ -264,6 +267,10 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
 
   motion_file: str = ""
   """Path to the pkl motion file."""
+
+  motion_dof_indices: tuple[int, ...] | None = None
+  """Indices into the motion data's DOF array to extract upper-body joints.
+  If None, uses slice(12, 29) for 29-DOF backward compatibility."""
 
   default_pose_ratio: float = 0.5
   """Fraction of envs that hold the default upper-body pose instead of playing motion."""

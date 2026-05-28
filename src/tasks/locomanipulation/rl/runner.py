@@ -52,3 +52,12 @@ class LocomanipulationOnPolicyRunner(MjlabOnPolicyRunner):
     attach_metadata_to_onnx(onnx_path, metadata)
     if self.logger.logger_type in ["wandb"]:
       wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
+
+
+class G1_23DOF_LocomanipulationOnPolicyRunner(LocomanipulationOnPolicyRunner):
+  """Runner for G1-23DOF locomanipulation with 23-DOF symmetry function."""
+
+  _DEFAULT_SYMMETRY_CFG = {
+    **LocomanipulationOnPolicyRunner._DEFAULT_SYMMETRY_CFG,
+    "data_augmentation_func": "src.tasks.locomanipulation.mdp.symmetry.g1_23dof_locomanipulation_symmetry",
+  }

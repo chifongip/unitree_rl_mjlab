@@ -43,24 +43,53 @@ _SIGN_FLIP_JOINTS = {
   21, 28,  # wrist_yaw (L, R)
 }
 
+# G1 23-DOF joint ordering (from MJCF XML).
+# Indices 0-5: left leg, 6-11: right leg, 12: waist_yaw, 13-17: left arm, 18-22: right arm.
+_JOINT_SWAP_PARTNERS_23DOF = {
+  # Left leg <-> Right leg
+  0: 6, 1: 7, 2: 8, 3: 9, 4: 10, 5: 11,
+  6: 0, 7: 1, 8: 2, 9: 3, 10: 4, 11: 5,
+  # Left arm <-> Right arm
+  13: 18, 14: 19, 15: 20, 16: 21, 17: 22,
+  18: 13, 19: 14, 20: 15, 21: 16, 22: 17,
+  # Waist (midline) — identity
+  12: 12,
+}
+
+_SIGN_FLIP_JOINTS_23DOF = {
+  # Roll joints
+  1, 7,     # hip_roll (L, R)
+  5, 11,    # ankle_roll (L, R)
+  14, 19,   # shoulder_roll (L, R)
+  17, 22,   # wrist_roll (L, R)
+  # Yaw joints
+  2, 8,     # hip_yaw (L, R)
+  12,       # waist_yaw
+  15, 20,   # shoulder_yaw (L, R)
+}
+
 class G1Symmetry:
-  """Precomputes mirroring tensors for G1 locomanipulation observations and actions."""
+  """Precomputes mirroring tensors for G1 29-DOF locomanipulation observations and actions."""
+
+  _N_JOINTS = 29
+  _SWAP_PARTNERS = _JOINT_SWAP_PARTNERS
+  _SIGN_FLIP = _SIGN_FLIP_JOINTS
 
   def __init__(self, env: RslRlVecEnvWrapper) -> None:
     self.device = env.device
     self._obs_manager = env.unwrapped.observation_manager
 
-    # Build joint mirroring tensors (29-DOF full body).
-    self._joint_swap_idx = self._build_swap_index(29, _JOINT_SWAP_PARTNERS)
-    self._joint_sign_mask = self._build_sign_mask(29, _SIGN_FLIP_JOINTS)
+    # Build joint mirroring tensors.
+    self._joint_swap_idx = self._build_swap_index(self._N_JOINTS, self._SWAP_PARTNERS)
+    self._joint_sign_mask = self._build_sign_mask(self._N_JOINTS, self._SIGN_FLIP)
 
     # Build action mirroring tensors (12-DOF lower body).
     # Lower-body indices 0-11 map to full-body indices 0-11.
     self._action_swap_idx = self._build_swap_index(12, {
-      k: v for k, v in _JOINT_SWAP_PARTNERS.items() if k < 12
+      k: v for k, v in self._SWAP_PARTNERS.items() if k < 12
     })
     self._action_sign_mask = self._build_sign_mask(12, {
-      j for j in _SIGN_FLIP_JOINTS if j < 12
+      j for j in self._SIGN_FLIP if j < 12
     })
 
     # Build per-group observation mirror plans.
@@ -117,6 +146,29 @@ class G1Symmetry:
   def mirror_actions(self, actions: torch.Tensor) -> torch.Tensor:
     """Mirror lower-body actions."""
     return actions[..., self._action_swap_idx.to(actions.device)] * self._action_sign_mask.to(actions.device)
+
+
+class G1_23DOFSymmetry(G1Symmetry):
+  """Precomputes mirroring tensors for G1 23-DOF locomanipulation observations and actions."""
+
+  _N_JOINTS = 23
+  _SWAP_PARTNERS = _JOINT_SWAP_PARTNERS_23DOF
+  _SIGN_FLIP = _SIGN_FLIP_JOINTS_23DOF
+
+  def _build_group_plan(self, group_name: str) -> list[_TermMirror]:
+    """Build a mirror plan using 23-DOF term mirror rules."""
+    plan: list[_TermMirror] = []
+    group_cfg = self._obs_manager.cfg[group_name]
+    if group_cfg is None:
+      return plan
+
+    for term_name in group_cfg.terms:
+      mirror = _get_term_mirror_23dof(term_name)
+      if mirror is not None:
+        plan.append(mirror)
+      else:
+        plan.append(_IdentityMirror())
+    return plan
 
 
 # --- Per-term mirror rules ---
@@ -256,6 +308,52 @@ def _get_term_mirror(term_name: str) -> _TermMirror | None:
   return None
 
 
+def _get_term_mirror_23dof(term_name: str) -> _TermMirror | None:
+  """Return the mirror transform for a 23-DOF observation term, or None for identity."""
+  # Simple sign-flip terms.
+  if term_name == "base_ang_vel":
+    return _NegateIndices((0, 2))  # x (roll), z (yaw) — pseudovector
+  if term_name == "projected_gravity":
+    return _NegateIndices((1,))    # y (left)
+  if term_name == "command":
+    return _NegateIndices((1, 2))  # lin_vel_y, ang_vel_z
+  if term_name == "phase":
+    return _NegateIndices((0, 1))  # half-period shift: sin→−sin, cos→−cos
+  if term_name == "base_lin_vel":
+    return _NegateIndices((1,))    # y (left)
+
+  # Joint swap-and-flip terms (full 23-DOF).
+  if term_name in ("joint_pos", "joint_vel"):
+    return _SwapAndFlipJoints(23, _JOINT_SWAP_PARTNERS_23DOF, _SIGN_FLIP_JOINTS_23DOF)
+
+  # Action term (12-DOF lower body).
+  if term_name == "actions":
+    return _SwapAndFlipJoints(12, {
+      k: v for k, v in _JOINT_SWAP_PARTNERS_23DOF.items() if k < 12
+    }, {j for j in _SIGN_FLIP_JOINTS_23DOF if j < 12})
+
+  # Foot terms (swap left/right).
+  if term_name in ("foot_height", "foot_air_time", "foot_contact"):
+    return _SwapFootValues()
+  if term_name == "foot_contact_forces":
+    return _SwapFootForces()
+  if term_name == "wrist_force":
+    return _SwapWristForces()
+
+  # Height scan — grid dimensions depend on sensor config; skip if unknown.
+  if term_name == "height_scan":
+    return None
+
+  # Base height terms — no mirroring.
+  if term_name == "base_height_command":
+    return None
+  if term_name == "base_height":
+    return None
+
+  # Unknown term — no mirroring (safe default).
+  return None
+
+
 # --- Module-level function for rsl_rl symmetry_cfg ---
 
 _g1_symmetry_cache: dict[int, G1Symmetry] = {}
@@ -293,6 +391,50 @@ def g1_locomanipulation_symmetry(
       else:
         mirrored_obs[group_name] = group_obs.clone()
     # torch.cat handles both TensorDict and plain dict.
+    aug_obs = torch.cat([obs, type(obs)(mirrored_obs, batch_size=obs.batch_size)], dim=0)
+
+  if actions is not None:
+    mirrored_actions = symmetry.mirror_actions(actions)
+    aug_actions = torch.cat([actions, mirrored_actions], dim=0)
+
+  return aug_obs, aug_actions
+
+
+# --- Module-level function for 23-DOF rsl_rl symmetry_cfg ---
+
+_g1_23dof_symmetry_cache: dict[int, G1_23DOFSymmetry] = {}
+
+
+def g1_23dof_locomanipulation_symmetry(
+  env: RslRlVecEnvWrapper,
+  obs: dict[str, torch.Tensor] | None,
+  actions: torch.Tensor | None,
+) -> tuple[dict[str, torch.Tensor] | None, torch.Tensor | None]:
+  """Left-right symmetry augmentation for G1 23-DOF locomanipulation.
+
+  Called by rsl_rl PPO during update(). Returns (augmented_obs, augmented_actions)
+  where the first half is original and the second half is mirrored.
+
+  Handles three call modes:
+    1. (env, obs, actions) — both provided
+    2. (env, obs, None) — obs only (mirror loss computation)
+    3. (env, None, actions) — actions only (mirror loss computation)
+  """
+  env_id = id(env)
+  if env_id not in _g1_23dof_symmetry_cache:
+    _g1_23dof_symmetry_cache[env_id] = G1_23DOFSymmetry(env)
+  symmetry = _g1_23dof_symmetry_cache[env_id]
+
+  aug_obs = None
+  aug_actions = None
+
+  if obs is not None:
+    mirrored_obs = {}
+    for group_name, group_obs in obs.items():
+      if group_name in symmetry._group_mirror_plans:
+        mirrored_obs[group_name] = symmetry.mirror_obs(group_obs, group_name)
+      else:
+        mirrored_obs[group_name] = group_obs.clone()
     aug_obs = torch.cat([obs, type(obs)(mirrored_obs, batch_size=obs.batch_size)], dim=0)
 
   if actions is not None:
