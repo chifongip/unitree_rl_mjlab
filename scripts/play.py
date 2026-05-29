@@ -388,6 +388,13 @@ def run_play(task_id: str, cfg: PlayConfig):
           "  --motion-file /path/to/motion.npz (local file)\n"
           "  --registry-name your-org/motions/motion-name (download from WandB)"
         )
+  # Extract nominal_height from env_cfg if base_height command exists.
+  nominal_height = 0.785
+  if "base_height" in env_cfg.commands:
+    bh_cfg = env_cfg.commands["base_height"]
+    nominal_height = bh_cfg.fixed_height if bh_cfg.fixed_height is not None else bh_cfg.nominal_height
+  print(f"[INFO]: Nominal height: {nominal_height}")
+
   log_dir: Path | None = None
   resume_path: Path | None = None
   if TRAINED_MODE:
@@ -488,12 +495,7 @@ def run_play(task_id: str, cfg: PlayConfig):
   # Set up keyboard command override for native viewer.
   override = None
   if resolved_viewer == "native":
-    nominal_height = 0.785
     cmd_mgr = env.unwrapped.command_manager
-    if hasattr(cmd_mgr, "_terms") and "base_height" in cmd_mgr._terms:
-      bh_cfg = cmd_mgr._terms["base_height"].cfg
-      if hasattr(bh_cfg, "nominal_height"):
-        nominal_height = bh_cfg.nominal_height
 
     override = KeyboardCommandOverride(nominal_height=nominal_height)
 
