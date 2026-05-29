@@ -21,23 +21,20 @@ class LocomanipulationOnPolicyRunner(MjlabOnPolicyRunner):
   }
 
   def __init__(self, env, train_cfg, log_dir=None, device="cpu"):
-    # Pop symmetry_cfg before super().__init__() to avoid passing it as **kwargs
-    # to PPO.__init__(), which would conflict with resolve_symmetry_config.
-    # Also avoids polluting train_cfg (which train.py later dumps to YAML).
-    enable_symmetry = train_cfg.get("algorithm", {}).pop("symmetry_cfg", True)
+    # Convert boolean symmetry_cfg to dict for rsl_rl's PPO, which expects
+    # a dict (or None) that gets passed to Symmetry(**symmetry_cfg).
+    alg_cfg = train_cfg.get("algorithm", {})
+    enable_symmetry = alg_cfg.pop("symmetry_cfg", True)
+    if enable_symmetry:
+      alg_cfg["symmetry_cfg"] = self._DEFAULT_SYMMETRY_CFG.copy()
+    else:
+      alg_cfg["symmetry_cfg"] = None
 
     super().__init__(env, train_cfg, log_dir, device)
 
-    # Inject symmetry into the constructed algorithm without mutating self.cfg,
-    # since train.py holds the same dict reference and will dump it to YAML.
-    if enable_symmetry:
-      from rsl_rl.utils import resolve_callable
-      symmetry_cfg = self._DEFAULT_SYMMETRY_CFG.copy()
-      symmetry_cfg["data_augmentation_func"] = resolve_callable(
-        symmetry_cfg["data_augmentation_func"]
-      )
-      symmetry_cfg["_env"] = self.env
-      self.alg.symmetry = symmetry_cfg
+    # Remove env reference from symmetry_cfg so train_cfg stays YAML-serializable.
+    if "symmetry_cfg" in self.cfg.get("algorithm", {}):
+      self.cfg["algorithm"]["symmetry_cfg"] = None
 
   def save(self, path: str, infos=None):
     super().save(path, infos)
