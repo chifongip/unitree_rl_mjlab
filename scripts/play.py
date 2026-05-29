@@ -315,6 +315,19 @@ def _apply_env_overrides(env_cfg, overrides: dict) -> None:
         if _check_and_set(path, env_cfg.actions[action_name].scale, action_data["scale"]):
           env_cfg.actions[action_name].scale = action_data["scale"]
 
+  # Restore nominal_height from training params (other command fields
+  # like fixed_height/fixed_command are play-mode-specific and must not
+  # be overwritten).
+  bh_saved = overrides.get("commands", {}).get("base_height", {})
+  if isinstance(bh_saved, dict) and "nominal_height" in bh_saved:
+    val = bh_saved["nominal_height"]
+    if isinstance(val, (int, float)):
+      bh_cfg = env_cfg.commands.get("base_height")
+      if bh_cfg is not None:
+        path = "commands.base_height.nominal_height"
+        if _check_and_set(path, bh_cfg.nominal_height, val):
+          bh_cfg.nominal_height = val
+
   if diffs:
     print("[INFO]: Params differ from saved training config:")
     print("\n".join(diffs))
@@ -388,13 +401,6 @@ def run_play(task_id: str, cfg: PlayConfig):
           "  --motion-file /path/to/motion.npz (local file)\n"
           "  --registry-name your-org/motions/motion-name (download from WandB)"
         )
-  # Extract nominal_height from env_cfg if base_height command exists.
-  nominal_height = 0.785
-  if "base_height" in env_cfg.commands:
-    bh_cfg = env_cfg.commands["base_height"]
-    nominal_height = bh_cfg.fixed_height if bh_cfg.fixed_height is not None else bh_cfg.nominal_height
-  print(f"[INFO]: Nominal height: {nominal_height}")
-
   log_dir: Path | None = None
   resume_path: Path | None = None
   if TRAINED_MODE:
@@ -431,6 +437,13 @@ def run_play(task_id: str, cfg: PlayConfig):
     if overrides is not None:
       _apply_env_overrides(env_cfg, overrides)
       print(f"[INFO]: Restored env config from {params_path}")
+
+  # Extract nominal_height from env_cfg if base_height command exists.
+  nominal_height = 0.785
+  if "base_height" in env_cfg.commands:
+    bh_cfg = env_cfg.commands["base_height"]
+    nominal_height = bh_cfg.nominal_height
+  print(f"[INFO]: Nominal height: {nominal_height}")
 
   if cfg.num_envs is not None:
     env_cfg.scene.num_envs = cfg.num_envs
