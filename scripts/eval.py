@@ -3,17 +3,23 @@
 Computes MAE per (model, force_level), averaged across all (pose, velocity) combos.
 Plots force vs error with one curve per model for comparison.
 
+Supports multi-task evaluation: mix 23-DOF and 29-DOF models in a single run by
+specifying per-model `task` in the eval config YAML.
+
 Usage:
     # Single checkpoint
-    python scripts/eval.py Unitree-G1-Locomanipulation-Flat \\
+    python scripts/eval.py --task Unitree-G1-Locomanipulation-Flat \\
         --checkpoint-file logs/.../model_20000.pt
 
     # Multi-model comparison via config file
-    python scripts/eval.py Unitree-G1-Locomanipulation-Flat \\
+    python scripts/eval.py --task Unitree-G1-Locomanipulation-Flat \\
         --eval-config eval_config.yaml
 
+    # Mixed 23-DOF + 29-DOF evaluation (no --task needed)
+    python scripts/eval.py --eval-config mixed_eval_config.yaml
+
     # Visual verification with viewer
-    python scripts/eval.py Unitree-G1-Locomanipulation-Flat \\
+    python scripts/eval.py --task Unitree-G1-Locomanipulation-Flat \\
         --eval-config eval_config.yaml --viewer native
 """
 
@@ -22,7 +28,6 @@ from __future__ import annotations
 import csv
 import json
 import re
-import sys
 import time
 from dataclasses import asdict, dataclass
 from itertools import product
@@ -41,30 +46,31 @@ from mjlab.utils.torch import configure_torch_backends
 
 
 # ---------------------------------------------------------------------------
-# Upper-body pose presets (17 joints, values in radians).
+# Upper-body pose presets (values in radians).
 # ---------------------------------------------------------------------------
+
+_29DOF_UPPER_BODY_JOINTS: tuple[str, ...] = (
+    "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+    "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint", "left_elbow_joint",
+    "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint", "right_elbow_joint",
+    "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+)
+
+_23DOF_UPPER_BODY_JOINTS: tuple[str, ...] = (
+    "waist_yaw_joint",
+    "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint",
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
+)
 
 POSE_PRESETS: dict[str, dict[str, float]] = {
     "neutral": {},
-    "zero": {
-        "waist_yaw_joint": 0.0,
-        "waist_roll_joint": 0.0,
-        "waist_pitch_joint": 0.0,
-        "left_shoulder_pitch_joint": 0.0,
-        "left_shoulder_roll_joint": 0.0,
-        "left_shoulder_yaw_joint": 0.0,
-        "left_elbow_joint": 0.0,
-        "left_wrist_roll_joint": 0.0,
-        "left_wrist_pitch_joint": 0.0,
-        "left_wrist_yaw_joint": 0.0,
-        "right_shoulder_pitch_joint": 0.0,
-        "right_shoulder_roll_joint": 0.0,
-        "right_shoulder_yaw_joint": 0.0,
-        "right_elbow_joint": 0.0,
-        "right_wrist_roll_joint": 0.0,
-        "right_wrist_pitch_joint": 0.0,
-        "right_wrist_yaw_joint": 0.0,
-    }
+    "zero": {j: 0.0 for j in _29DOF_UPPER_BODY_JOINTS},
+    "23dof_zero": {j: 0.0 for j in _23DOF_UPPER_BODY_JOINTS},
 }
 
 # ---------------------------------------------------------------------------
@@ -140,6 +146,26 @@ def _supplement_obs_terms(data: dict, params_dir: Path) -> None:
             continue
         if "terms" in group_data and group_name in obs_data:
             obs_data[group_name]["terms"] = group_data["terms"]
+
+
+def _extract_fixed_height_from_params(params_dir: Path) -> float | None:
+    """Extract fixed_height or nominal_height from saved training params."""
+    overrides = _load_params_overrides(params_dir)
+    if overrides is None:
+        return None
+    cmds = overrides.get("commands")
+    if not isinstance(cmds, dict):
+        return None
+    bh = cmds.get("base_height")
+    if not isinstance(bh, dict):
+        return None
+    fh = bh.get("fixed_height")
+    if fh is not None and isinstance(fh, (int, float)):
+        return float(fh)
+    nh = bh.get("nominal_height")
+    if nh is not None and isinstance(nh, (int, float)):
+        return float(nh)
+    return None
 
 
 def _apply_env_overrides(env_cfg, overrides: dict) -> None:
@@ -221,6 +247,16 @@ class EpisodeData:
     combo: EvalCombo
 
 
+@dataclass
+class EvalCheckpoint:
+    """Resolved checkpoint with per-model task and height."""
+    name: str
+    path: Path | None
+    log_dir: Path | None
+    task_id: str
+    fixed_height: float
+
+
 # ---------------------------------------------------------------------------
 # Metric computation.
 # ---------------------------------------------------------------------------
@@ -257,11 +293,19 @@ def compute_velocity_metrics(ep: EpisodeData) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
+def _get_upper_body_joints(task_id: str) -> tuple[str, ...]:
+    """Derive upper-body joint names based on task DOF variant."""
+    if "23Dof" in task_id or "23dof" in task_id:
+        return _23DOF_UPPER_BODY_JOINTS
+    return _29DOF_UPPER_BODY_JOINTS
+
+
 def _configure_env_base(
     env_cfg,
     num_envs: int,
     fixed_height: float,
     episode_steps: int,
+    task_id: str = "",
 ) -> None:
     """Apply base env settings. Force/pose/velocity are set at runtime."""
     env_cfg.scene.num_envs = num_envs
@@ -270,18 +314,9 @@ def _configure_env_base(
     env_cfg.commands["base_height"].fixed_height = fixed_height
 
     # Default pose placeholder (ensures _fixed_pose tensor is always created).
+    upper_joints = _get_upper_body_joints(task_id)
     env_cfg.actions["upper_body_motion"].fixed_upper_body_pose = {
-        joint: 0.0 for joint in (
-            "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
-            "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
-            "left_shoulder_yaw_joint", "left_elbow_joint",
-            "left_wrist_roll_joint", "left_wrist_pitch_joint",
-            "left_wrist_yaw_joint",
-            "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
-            "right_shoulder_yaw_joint", "right_elbow_joint",
-            "right_wrist_roll_joint", "right_wrist_pitch_joint",
-            "right_wrist_yaw_joint",
-        )
+        joint: 0.0 for joint in upper_joints
     }
 
     # Default force: no force (will be overridden at runtime).
@@ -466,35 +501,33 @@ def _run_viewer_combo_multi_vel(
 
 
 def _build_env(
-    task_id: str,
+    ckpt: EvalCheckpoint,
     cfg: EvalConfig,
     device: str,
     agent_cfg,
-    resume_path: Path | None,
-    log_dir: Path | None,
     is_trained: bool,
     num_envs_override: int | None = None,
 ):
     """Create env + load policy once. Force/pose/velocity set at runtime."""
-    env_cfg = load_env_cfg(task_id, play=True)
+    env_cfg = load_env_cfg(ckpt.task_id, play=True)
 
-    if is_trained and log_dir is not None:
-        params_path = Path(cfg.params_dir) if cfg.params_dir else log_dir / "params"
+    if is_trained and ckpt.log_dir is not None:
+        params_path = Path(cfg.params_dir) if cfg.params_dir else ckpt.log_dir / "params"
         overrides = _load_params_overrides(params_path)
         if overrides is not None:
             _apply_env_overrides(env_cfg, overrides)
 
-    _configure_env_base(env_cfg, num_envs_override or cfg.num_envs, cfg.fixed_height, cfg.episode_steps)
+    _configure_env_base(env_cfg, num_envs_override or cfg.num_envs, ckpt.fixed_height, cfg.episode_steps, task_id=ckpt.task_id)
 
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     clip_val = agent_cfg.clip_actions if agent_cfg is not None else 0.0
     env = RslRlVecEnvWrapper(env, clip_actions=clip_val)
 
     # Load policy.
-    if is_trained and agent_cfg is not None and resume_path is not None:
-        runner_cls = load_runner_cls(task_id) or MjlabOnPolicyRunner
+    if is_trained and agent_cfg is not None and ckpt.path is not None:
+        runner_cls = load_runner_cls(ckpt.task_id) or MjlabOnPolicyRunner
         runner = runner_cls(env, asdict(agent_cfg), device=device)
-        runner.load(str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device)
+        runner.load(str(ckpt.path), load_cfg={"actor": True}, strict=True, map_location=device)
         policy = runner.get_inference_policy(device=device)
     else:
         action_shape = env.unwrapped.action_space.shape
@@ -514,13 +547,19 @@ def _build_env(
 @dataclass(frozen=True)
 class EvalConfig:
     """Evaluation configuration."""
+    task: str | None = None
+    """Registered task name (e.g. Unitree-G1-Locomanipulation-Flat). Used as
+    default for all models; per-model `task` in --eval-config overrides this.
+    Required unless every model in --eval-config specifies its own task."""
     eval_config: str | None = None
     """Path to YAML file defining models to compare. Format:
     models:
       - name: "20k"
+        task: "Unitree-G1-Locomanipulation-Flat"   # optional, defaults to --task
         checkpoint: "logs/.../model_20000.pt"
-      - name: "30k"
-        checkpoint: "logs/.../model_30000.pt"
+      - name: "23dof-20k"
+        task: "Unitree-G1-23Dof-Locomanipulation-Flat"
+        checkpoint: "logs/.../model_20000.pt"
     """
     checkpoint_file: str | None = None
     """Single checkpoint (ignored if --eval-config is set)."""
@@ -533,7 +572,8 @@ class EvalConfig:
     ang_z: tuple[float, ...] = (-0.5, 0.0, 0.5)
     force_conditions: tuple[str, ...] = ("none", "medium", "large")
     body_poses: tuple[str, ...] = ("zero",)
-    fixed_height: float = 0.785
+    fixed_height: float | None = None
+    """Override base height for all models. If None, auto-detected from checkpoint params."""
     output_dir: str = "eval_results"
     metric: Literal["combined", "linear", "angular"] = "combined"
     agent: Literal["zero", "random", "trained"] = "trained"
@@ -541,36 +581,69 @@ class EvalConfig:
 
 
 
+def _resolve_fixed_height(
+    log_dir: Path | None,
+    cfg: EvalConfig,
+) -> float:
+    """Resolve fixed_height: CLI override > saved params > default 0.785."""
+    if cfg.fixed_height is not None:
+        return cfg.fixed_height
+    if log_dir is not None:
+        params_path = Path(cfg.params_dir) if cfg.params_dir else log_dir / "params"
+        h = _extract_fixed_height_from_params(params_path)
+        if h is not None:
+            return h
+    return 0.785
+
+
 def run_eval(task_id: str, cfg: EvalConfig):
     configure_torch_backends()
     device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
     is_trained = cfg.agent == "trained"
-    agent_cfg = load_rl_cfg(task_id) if is_trained else None
 
     # Resolve checkpoints from config file or single checkpoint.
-    checkpoints: list[tuple[str, Path | None, Path | None]] = []
+    checkpoints: list[EvalCheckpoint] = []
     if is_trained:
         if cfg.eval_config is not None:
             with open(cfg.eval_config) as f:
                 eval_cfg_data = yaml.safe_load(f)
             for entry in eval_cfg_data.get("models", []):
                 name = entry.get("name", "")
+                entry_task = entry.get("task", task_id)
                 ckpt_path = Path(entry["checkpoint"])
                 if not ckpt_path.exists():
                     raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
                 if not name:
                     name = ckpt_path.stem
-                checkpoints.append((name, ckpt_path, ckpt_path.parent))
+                h = _resolve_fixed_height(ckpt_path.parent, cfg)
+                checkpoints.append(EvalCheckpoint(
+                    name=name, path=ckpt_path, log_dir=ckpt_path.parent,
+                    task_id=entry_task, fixed_height=h,
+                ))
         elif cfg.checkpoint_file is not None:
             p = Path(cfg.checkpoint_file)
             if not p.exists():
                 raise FileNotFoundError(f"Checkpoint not found: {p}")
-            checkpoints.append((p.stem, p, p.parent))
+            h = _resolve_fixed_height(p.parent, cfg)
+            checkpoints.append(EvalCheckpoint(
+                name=p.stem, path=p, log_dir=p.parent,
+                task_id=task_id, fixed_height=h,
+            ))
         else:
             raise ValueError("Provide --eval-config or --checkpoint-file for trained agent")
     else:
-        checkpoints.append((cfg.agent, None, None))
+        checkpoints.append(EvalCheckpoint(
+            name=cfg.agent, path=None, log_dir=None,
+            task_id=task_id, fixed_height=cfg.fixed_height or 0.785,
+        ))
+
+    # Cache agent_cfg per task_id.
+    _agent_cfg_cache: dict[str, object] = {}
+    def _get_agent_cfg(task_id_for_ckpt: str):
+        if task_id_for_ckpt not in _agent_cfg_cache:
+            _agent_cfg_cache[task_id_for_ckpt] = load_rl_cfg(task_id_for_ckpt) if is_trained else None
+        return _agent_cfg_cache[task_id_for_ckpt]
 
     vel_combos = list(product(cfg.vel_x, cfg.vel_y, cfg.ang_z))
 
@@ -588,10 +661,12 @@ def run_eval(task_id: str, cfg: EvalConfig):
 
     # --- Viewer mode: visual verification, no metrics ---
     if cfg.viewer == "native":
-        for model_name, resume_path, log_dir in checkpoints:
+        for ckpt in checkpoints:
+            ckpt_agent_cfg = _get_agent_cfg(ckpt.task_id)
+            print(f"[INFO] {ckpt.name}: task={ckpt.task_id}, fixed_height={ckpt.fixed_height:.3f}")
             env, policy = _build_env(
-                task_id, cfg, device,
-                agent_cfg, resume_path, log_dir, is_trained,
+                ckpt, cfg, device,
+                ckpt_agent_cfg, is_trained,
                 num_envs_override=effective_num_envs,
             )
             try:
@@ -605,7 +680,7 @@ def run_eval(task_id: str, cfg: EvalConfig):
                             raise ValueError(f"Unknown body pose: {pose_name}")
                         combo_idx += 1
                         print(
-                            f"[{combo_idx}/{n_total}] {model_name} | "
+                            f"[{combo_idx}/{n_total}] {ckpt.name} | "
                             f"force={force_name} pose={pose_name}"
                         )
                         _run_viewer_combo_multi_vel(
@@ -626,11 +701,14 @@ def run_eval(task_id: str, cfg: EvalConfig):
 
     pbar = tqdm(total=total_combos, desc="Evaluating", unit="combo")
 
-    for model_name, resume_path, log_dir in checkpoints:
+    for ckpt in checkpoints:
+        ckpt_agent_cfg = _get_agent_cfg(ckpt.task_id)
+        print(f"[INFO] {ckpt.name}: task={ckpt.task_id}, fixed_height={ckpt.fixed_height:.3f}")
+
         # Build env + policy ONCE per model.
         env, policy = _build_env(
-            task_id, cfg, device,
-            agent_cfg, resume_path, log_dir, is_trained,
+            ckpt, cfg, device,
+            ckpt_agent_cfg, is_trained,
             num_envs_override=effective_num_envs,
         )
 
@@ -681,11 +759,12 @@ def run_eval(task_id: str, cfg: EvalConfig):
 
                 metric_key = f"mae_{cfg.metric}" if cfg.metric != "combined" else "mae_combined"
                 pbar.set_postfix_str(
-                    f"{model_name}/{force_name}: {metric_key}={agg[metric_key]:.4f}"
+                    f"{ckpt.name}/{force_name}: {metric_key}={agg[metric_key]:.4f}"
                 )
 
                 all_results.append({
-                    "model": model_name,
+                    "model": ckpt.name,
+                    "task": ckpt.task_id,
                     "force": force_name,
                     **agg,
                 })
@@ -701,7 +780,7 @@ def run_eval(task_id: str, cfg: EvalConfig):
 # ---------------------------------------------------------------------------
 
 _ALL_RESULT_KEYS = [
-    "model", "force",
+    "model", "task", "force",
     "mae_vel_xy", "mae_ang_z", "mae_combined",
     "mean_ep_length", "survival_rate",
 ]
@@ -751,17 +830,25 @@ def _plot_results(results: list[dict], cfg: EvalConfig, out_dir: Path):
     # Collect force levels in order.
     force_levels = list(cfg.force_conditions)
 
-    # Group by model.
+    # Group by model (include task in label if multiple tasks present).
+    tasks_in_results = {r.get("task", "") for r in results}
+    multi_task = len(tasks_in_results) > 1
+
     models: dict[str, list[dict]] = {}
     for r in results:
         models.setdefault(r["model"], []).append(r)
 
     for model_name, rows in models.items():
-        # Order by force_levels.
         row_by_force = {r["force"]: r for r in rows}
         x_labels = [f for f in force_levels if f in row_by_force]
         y_vals = [row_by_force[f][metric_key] for f in x_labels]
-        ax.plot(x_labels, y_vals, "o-", label=model_name, linewidth=2, markersize=8)
+        label = model_name
+        if multi_task:
+            task = rows[0].get("task", "")
+            # Show short task name (after last dot or "Unitree-").
+            short = task.replace("Unitree-", "").replace("-Flat", "").replace("-Rough", "")
+            label = f"{model_name} [{short}]"
+        ax.plot(x_labels, y_vals, "o-", label=label, linewidth=2, markersize=8)
 
     ax.set_xlabel("Force Level")
     ax.set_ylabel(metric_label)
@@ -785,23 +872,30 @@ def main():
     import mjlab.tasks  # noqa: F401
     import src.tasks  # noqa: F401
 
-    all_tasks = list_tasks()
-    chosen_task, remaining_args = tyro.cli(
-        tyro.extras.literal_type_from_choices(all_tasks),
-        add_help=False,
-        return_unknown_args=True,
-        config=mjlab.TYRO_FLAGS,
-    )
+    cfg = tyro.cli(EvalConfig, config=mjlab.TYRO_FLAGS)
 
-    args = tyro.cli(
-        EvalConfig,
-        args=remaining_args,
-        default=EvalConfig(),
-        prog=sys.argv[0] + f" {chosen_task}",
-        config=mjlab.TYRO_FLAGS,
-    )
+    task_id = cfg.task
+    if task_id is None:
+        if cfg.eval_config is not None:
+            # Check if all models specify their own task.
+            with open(cfg.eval_config) as f:
+                eval_cfg_data = yaml.safe_load(f)
+            models = eval_cfg_data.get("models", [])
+            if models and all("task" in m for m in models):
+                # Use first model's task as placeholder; per-model tasks will be used.
+                task_id = models[0]["task"]
+            else:
+                raise ValueError(
+                    "--task is required when some models in --eval-config lack a 'task' field"
+                )
+        elif cfg.agent != "trained":
+            # Dummy agents need a task to load env config.
+            all_tasks = list_tasks()
+            task_id = next(iter(all_tasks))
+        else:
+            raise ValueError("--task is required (or specify 'task' per model in --eval-config)")
 
-    run_eval(chosen_task, args)
+    run_eval(task_id, cfg)
 
 
 if __name__ == "__main__":

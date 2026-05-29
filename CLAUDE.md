@@ -63,38 +63,49 @@ python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --viewer viser
 ### Evaluation
 ```bash
 # Single checkpoint
-python scripts/eval.py Unitree-G1-Locomanipulation-Flat \
+python scripts/eval.py --task Unitree-G1-Locomanipulation-Flat \
     --checkpoint-file logs/.../model_20000.pt
 
 # Multi-model comparison via YAML config
-python scripts/eval.py Unitree-G1-Locomanipulation-Flat \
+python scripts/eval.py --task Unitree-G1-Locomanipulation-Flat \
     --eval-config eval_config.yaml
 
+# Mixed 23-DOF + 29-DOF evaluation (no --task needed if all models specify task)
+python scripts/eval.py --eval-config mixed_eval_config.yaml
+
 # Visual verification with viewer
-python scripts/eval.py Unitree-G1-Locomanipulation-Flat \
+python scripts/eval.py --task Unitree-G1-Locomanipulation-Flat \
     --eval-config eval_config.yaml --viewer native
 ```
 
 Computes velocity tracking MAE per (model, force_level), averaged across all (pose, velocity) combos. Outputs CSV + JSON + comparison plot (force vs error, one curve per model).
 
 **Key flags:**
+- `--task <name>`: Registered task name. Required unless all models in `--eval-config` specify their own `task`.
 - `--eval-config <yaml>`: Multi-checkpoint config (see format below)
 - `--checkpoint-file <pt>`: Single checkpoint (ignored if `--eval-config` set)
 - `--force-conditions`: Force presets to test (`"none"`, `"medium"` (-15N), `"large"` (-30N))
-- `--body-poses`: Pose presets (`"neutral"` = default joint pos, `"zero"` = explicit zeros)
+- `--body-poses`: Pose presets (`"neutral"` = default joint pos, `"zero"` = explicit zeros for 29-DOF, `"23dof_zero"` for 23-DOF)
 - `--vel-x`, `--vel-y`, `--ang-z`: Velocity command sweeps (Python tuple syntax)
 - `--episode-steps`: Steps per combo (default 1000)
+- `--fixed-height`: Override base height for all models. If omitted, auto-detected from each checkpoint's saved training params.
 - `--metric`: `"combined"` (default), `"linear"`, or `"angular"`
 - `--viewer`: `"none"` (default) or `"native"` (opens GLFW window)
 
 **Config file format** (`eval_config.yaml`):
 ```yaml
 models:
-  - name: "20k"
+  - name: "29dof-20k"
+    task: "Unitree-G1-Locomanipulation-Flat"     # optional, defaults to --task
     checkpoint: "logs/.../model_20000.pt"
-  - name: "30k"
-    checkpoint: "logs/.../model_30000.pt"
+  - name: "23dof-20k"
+    task: "Unitree-G1-23Dof-Locomanipulation-Flat"
+    checkpoint: "logs/.../model_20000.pt"
 ```
+
+**Multi-task support**: Models from different tasks (e.g. 23-DOF and 29-DOF) can be evaluated in a single run. Each model gets its own env built from its task's config (action space, runner class, robot assets). The `task` column in results distinguishes them. Plot labels show short task names when multiple tasks are present.
+
+**Base height**: `fixed_height` is auto-loaded from each checkpoint's `env_overrides.yaml`/`env.yaml` (reads `commands.base_height.fixed_height`, falls back to `nominal_height`). CLI `--fixed-height` overrides all.
 
 **Performance**: Velocity combos are parallelized — envs are partitioned into groups (one per combo) with per-env commands on `vel_command_b`, so all combos run in a single episode batch. `num_envs` is auto-adjusted to be divisible by the number of combos (rounded down, minimum 1 env/combo). Force/pose remain sequential (global config mutation). Viewer mode uses the same partitioning; switch between combos with `,`/`.` keys. Progress bar via tqdm.
 
