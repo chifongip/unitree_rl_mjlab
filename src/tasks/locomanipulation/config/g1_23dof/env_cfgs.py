@@ -236,8 +236,8 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   cfg.rewards["foot_gait"].params["period"] = 0.6
 
   # Height command and reward settings.
-  # cfg.commands["base_height"].nominal_height = 0.75                                                                                                                                                      
-  # cfg.commands["base_height"].max_deviation = 0.25                                                                                                                                                       
+  # cfg.commands["base_height"].nominal_height = 0.75
+  # cfg.commands["base_height"].max_deviation = 0.25
   # cfg.rewards["pose"].params["nominal_height"] = 0.75
 
   # Restrict pose reward to lower-body joints only.
