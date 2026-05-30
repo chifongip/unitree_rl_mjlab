@@ -15,7 +15,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
-from src.tasks.locomanipulation.mdp.events import HandForceEvent, TriangleWaveForceEvent
+from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
 
@@ -227,10 +227,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
 
   # TODO: Hyperparameters
   cfg.observations["actor"].terms["phase"].params["period"] = 0.6
-  cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
-  cfg.rewards["body_orientation_l2"].params["standing_weight"] = 1.5
-  cfg.rewards["leg_joint_vel_penalty"].weight = -2.0e-3
   cfg.rewards["foot_gait"].params["period"] = 0.6
+  cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
+  cfg.rewards["body_orientation_l2"].params["standing_weight"] = 2.0
+  cfg.rewards["leg_joint_vel_penalty"].weight = -1.0e-3
+  cfg.rewards["base_drift_penalty"].weight = -2.0
 
   # Height command and reward settings.
   cfg.commands["base_height"].nominal_height = 0.75

@@ -412,6 +412,11 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
       },
     ),
+    "base_drift_penalty": RewardTermCfg(
+      func=mdp.base_drift_penalty,
+      weight=-2.0,
+      params={"command_name": "twist", "command_threshold": 0.1, "std": 0.5},
+    ),
   }
 
   ##

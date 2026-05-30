@@ -440,12 +440,14 @@ class TriangleWaveForceEvent:
 
     # Triangle wave state.
     self._force_phase_ts = torch.rand(self._num_envs, 1, device=self._device)
-    self._force_phase = torch.rand(self._num_envs, 1, device=self._device)
+    self._force_phase = torch.abs(
+      torch.remainder(self._force_phase_ts, 2.0) - 1.0
+    )
     dur_lo, dur_hi = cfg.params["duration_s"]
-    dur_lo_steps = dur_lo / self._step_dt
-    dur_hi_steps = dur_hi / self._step_dt
+    self._dur_lo_steps = int(dur_lo / self._step_dt)
+    self._dur_hi_steps = int(dur_hi / self._step_dt)
     self._force_duration = torch.randint(
-      int(dur_lo_steps), int(dur_hi_steps) + 1,
+      self._dur_lo_steps, self._dur_hi_steps + 1,
       (self._num_envs, 1), device=self._device,
     ).float()
 
@@ -525,13 +527,15 @@ class TriangleWaveForceEvent:
     # --- Standing/walking gate ---
     twist_cmd = env.command_manager.get_command(self._command_name)
     total_cmd = torch.norm(twist_cmd[:, :2], dim=1) + torch.abs(twist_cmd[:, 2])
-    is_standing = total_cmd <= self._command_threshold
+    is_standing = total_cmd < self._command_threshold
 
     # --- Update phase for standing envs only ---
     active = is_standing & ~self._no_force_mask
-    self._force_phase_ts[active] += 1.0 / self._force_duration[active]
+    self._force_phase_ts[active] = torch.remainder(
+      self._force_phase_ts[active] + 1.0 / self._force_duration[active], 2.0
+    )
     self._force_phase[active] = torch.abs(
-      torch.remainder(self._force_phase_ts[active], 2.0) - 1.0
+      self._force_phase_ts[active] - 1.0
     )
 
     # --- Compute raw force from phase ---
@@ -599,11 +603,11 @@ class TriangleWaveForceEvent:
 
     n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
     self._force_phase_ts[env_ids] = torch.rand(n, 1, device=self._device)
-    self._force_phase[env_ids] = torch.rand(n, 1, device=self._device)
-    dur_lo_steps = self._force_duration.min().item()
-    dur_hi_steps = self._force_duration.max().item()
+    self._force_phase[env_ids] = torch.abs(
+      torch.remainder(self._force_phase_ts[env_ids], 2.0) - 1.0
+    )
     self._force_duration[env_ids] = torch.randint(
-      int(dur_lo_steps), int(dur_hi_steps) + 1,
+      self._dur_lo_steps, self._dur_hi_steps + 1,
       (n, 1), device=self._device,
     ).float()
 

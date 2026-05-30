@@ -15,7 +15,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
-from src.tasks.locomanipulation.mdp.events import HandForceEvent, TriangleWaveForceEvent
+from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
 

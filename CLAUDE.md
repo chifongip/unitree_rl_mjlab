@@ -243,8 +243,8 @@ External force curriculum (`TriangleWaveForceEvent`) applies forces to end-effec
 
 **`TriangleWaveForceEvent`**: Replaces the old `HandForceEvent` impulse lifecycle with smoother, continuous disturbance. Three operating modes per environment:
 
-- **Standing** (`|v_cmd| <= 0.1`): Force oscillates via triangle wave between `f_min` and `f_max`. Phase updates every step: `phase = |remainder(ts, 2) - 1|`, producing a 0→1→0→1 cycle. Half-cycle duration configurable via `duration_s` (default 3-5s). Force: `f = f_min + (f_max - f_min) * phase`.
-- **Walking** (`|v_cmd| > 0.1`): Phase freezes. XY force projected to oppose walking direction via `quat_apply(base_quat, [cmd_x, cmd_y, 0])`. Z force unchanged. Simulates dragging weight.
+- **Standing** (`|v_cmd| < 0.1`): Force oscillates via triangle wave between `f_min` and `f_max`. Phase updates every step: `phase = |remainder(ts, 2) - 1|`, producing a 0→1→0→1 cycle. Half-cycle duration configurable via `duration_s` (default 3-5s). Force: `f = f_min + (f_max - f_min) * phase`.
+- **Walking** (`|v_cmd| >= 0.1`): Phase freezes. XY force projected to oppose walking direction via `quat_apply(base_quat, [cmd_x, cmd_y, 0])`. Z force unchanged. Simulates dragging weight.
 - **No-force** (per-episode mask): ~5% of envs get zero force, preserving baseline skills.
 
 State tensors (resampled at reset): `_force_phase_ts`, `_force_phase`, `_force_duration`, `_force_xyz_scale`, `_no_force_mask`. `constant_force` mode bypasses all logic (fixed force every step, for testing).

@@ -188,6 +188,34 @@ def leg_joint_vel_penalty(
   return penalty * is_standing
 
 
+def base_drift_penalty(
+  env: ManagerBasedRlEnv,
+  std: float = 0.5,
+  command_name: str = "twist",
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize XY base linear velocity when the robot should be standing.
+
+  Uses a linear kernel (v_xy / std, capped at 1.0) which is more punitive
+  than the Gaussian kernel in track_linear_velocity at moderate drift speeds.
+  Only active when the velocity command magnitude is below command_threshold.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  cmd = env.command_manager.get_command(command_name)
+  assert cmd is not None, f"Command '{command_name}' not found."
+  total_cmd = torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])
+  is_standing = (total_cmd < command_threshold).float()
+  v_xy = asset.data.root_link_lin_vel_b[:, :2]
+  v_xy_mag = torch.norm(v_xy, dim=1)
+  penalty = torch.clamp(v_xy_mag / std, max=1.0)
+  standing_mask = is_standing > 0
+  env.extras["log"]["Metrics/base_drift_mean"] = (
+    torch.mean(v_xy_mag[standing_mask]) if standing_mask.any() else torch.tensor(0.0, device=v_xy_mag.device)
+  )
+  return penalty * is_standing
+
+
 def angular_momentum_penalty(
   env: ManagerBasedRlEnv,
   sensor_name: str,
