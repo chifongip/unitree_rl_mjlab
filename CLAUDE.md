@@ -239,7 +239,15 @@ Policy controls 12 lower-body joints only; upper body driven by ACCAD motion dat
 
 **`foot_swing_height`** (class-based): Tracks peak foot height during each swing phase and penalizes deviation from `target_height` at landing (`first_contact`). Unlike `feet_clearance` (velocity-weighted, negligible at low speeds), this provides a speed-independent signal that fires at every landing. Stateful — maintains `peak_heights` tensor, cleared via `reset()` at episode boundaries. Monitor `Metrics/peak_height_mean` during training.
 
-External force curriculum (`HandForceEvent`) applies random wrenches to end-effectors to simulate carrying objects. Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`). Per-env Dirichlet axis scaling for force diversity. Config in `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]`.
+External force curriculum (`TriangleWaveForceEvent`) applies forces to end-effectors with mode-dependent behavior. Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`). Per-env Dirichlet axis scaling for force diversity. Config in `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]`.
+
+**`TriangleWaveForceEvent`**: Replaces the old `HandForceEvent` impulse lifecycle with smoother, continuous disturbance. Three operating modes per environment:
+
+- **Standing** (`|v_cmd| <= 0.1`): Force oscillates via triangle wave between `f_min` and `f_max`. Phase updates every step: `phase = |remainder(ts, 2) - 1|`, producing a 0→1→0→1 cycle. Half-cycle duration configurable via `duration_s` (default 3-5s). Force: `f = f_min + (f_max - f_min) * phase`.
+- **Walking** (`|v_cmd| > 0.1`): Phase freezes. XY force projected to oppose walking direction via `quat_apply(base_quat, [cmd_x, cmd_y, 0])`. Z force unchanged. Simulates dragging weight.
+- **No-force** (per-episode mask): ~5% of envs get zero force, preserving baseline skills.
+
+State tensors (resampled at reset): `_force_phase_ts`, `_force_phase`, `_force_duration`, `_force_xyz_scale`, `_no_force_mask`. `constant_force` mode bypasses all logic (fixed force every step, for testing).
 
 Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table (7 entries, 0.50m–0.785m) computed via `scripts/compute_height_postures.py` (IK solver + scipy optimization). Curriculum: `height_scale_staged` ramps `height_scale` from 0 to 1. Both `variable_posture` and `stand_still` look up target joint angles from this table.
 
@@ -248,7 +256,7 @@ Symmetric data augmentation doubles mini-batches by mirroring across the sagitta
 **Play-mode config** (`play=True` in `unitree_g1_locomanipulation_flat_env_cfg`):
 - Infinite episode length, disables observation corruption
 - Removes `push_robot` event, clears all curricula
-- Sets `hand_force` to `no_force_ratio=1.0` with zero force range (disables random impulses; `constant_force` can still be set for testing)
+- Sets `hand_force` to `no_force_ratio=0.0` with `force_scale=1.0` (enables force for validation; `constant_force` can still be set for testing)
 - Adds `randomize_terrain` on reset
 - Sets `fixed_upper_body_pose` (HOME_KEYFRAME), `fixed_command=(0,0,0)`, `fixed_height=0.785`
 - Flat variant: narrows command ranges, removes terrain_scan/height_scan
@@ -256,7 +264,7 @@ Symmetric data augmentation doubles mini-batches by mirroring across the sagitta
 
 **Play-mode testing flags** (set in config, uncomment to activate):
 - `fixed_upper_body_pose` (action cfg): pin upper body to specific joint angles
-- `constant_force` (event params): apply fixed force every step, bypasses impulse lifecycle
+- `constant_force` (event params): apply fixed force every step, bypasses triangle wave logic
 - `fixed_command` (command cfg): pin velocity command
 - `fixed_height` (command cfg): pin commanded height
 

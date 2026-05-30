@@ -15,7 +15,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
-from src.tasks.locomanipulation.mdp.events import HandForceEvent
+from src.tasks.locomanipulation.mdp.events import HandForceEvent, TriangleWaveForceEvent
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
 
@@ -132,10 +132,11 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
 
   # External force on hands for carrying-heavy-object training.
+  # Standing envs: triangle wave oscillation. Walking envs: resistance projection.
   # In play mode, no external force is applied.
   # Jacobian-based max force estimation ensures forces are physically plausible.
   cfg.events["hand_force"] = EventTermCfg(
-    func=HandForceEvent,
+    func=TriangleWaveForceEvent,
     mode="step",
     params={
       "force_range_max": {
@@ -145,14 +146,8 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       },
       "force_scale": 0.0,
       "torque_range": (0.0, 0.0),
-      "duration_s": (8.0, 12.0),
-      "cooldown_s": (2.0, 4.0),
+      "duration_s": (3.0, 5.0),
       "no_force_ratio": 0.05,
-      "zero_force_prob": {
-        "x": 0.25,
-        "y": 0.25,
-        "z": 0.25,
-      },
       "body_point_offset_range": {
         "x": (-0.05, 0.05),
         "y": (-0.05, 0.05),
@@ -171,10 +166,9 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
         ".*_wrist_roll_joint",
         ".*_wrist_pitch_joint",
         ".*_wrist_yaw_joint",
-        # "waist_yaw_joint",                                                                                                                                               
-        # "waist_roll_joint",                                                                                                                                              
-        # "waist_pitch_joint",
       ),
+      "command_name": "twist",
+      "command_threshold": 0.1,
     },
   )
   cfg.curriculum["force_curriculum"] = CurriculumTermCfg(
@@ -383,10 +377,11 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
 
-    # Keep hand_force for constant-force testing; disable random impulse lifecycle.
-    cfg.events["hand_force"].params["no_force_ratio"] = 1.0
+    # Enable force event in play mode for validation.
+    cfg.events["hand_force"].params["no_force_ratio"] = 0.0
+    cfg.events["hand_force"].params["force_scale"] = 1.0
     cfg.events["hand_force"].params["force_range_max"] = {
-      "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)
+      "x": (-40.0, 40.0), "y": (-40.0, 40.0), "z": (-50.0, 5.0),
     }
     cfg.events["randomize_terrain"] = EventTermCfg(
       func=envs_mdp.randomize_terrain,
