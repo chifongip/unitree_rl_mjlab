@@ -230,7 +230,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   cfg.rewards["foot_gait"].params["period"] = 0.6
   cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
   cfg.rewards["body_orientation_l2"].params["standing_weight"] = 2.0
-  cfg.rewards["leg_joint_vel_penalty"].weight = -1.0e-3
+  cfg.rewards["leg_joint_vel_penalty"].weight = -0.05
   cfg.rewards["base_drift_penalty"].weight = -2.0
 
   # Height command and reward settings.

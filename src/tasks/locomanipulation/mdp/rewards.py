@@ -171,20 +171,42 @@ def body_angular_velocity_penalty(
 def leg_joint_vel_penalty(
   env: ManagerBasedRlEnv,
   command_name: str,
+  command_threshold: float = 0.1,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  std: float = 0.5,
+  force_event_name: str | None = None,
+  force_std_scale: float = 5.0,
 ) -> torch.Tensor:
   """Penalize lower-body joint velocities when standing still.
 
-  Acts as a damper on corrective leg motions to prevent self-excited
-  oscillations during walk-to-stand transitions.
+  Uses a penalty kernel: 1 - exp(-mean(sq(vel)) / std^2). Returns 0 when
+  still, 1 when fast. Small corrective velocities are barely penalized;
+  large velocities are strongly penalized.
+
+  When force_event_name is set and force_scale > 0, forced envs use a larger
+  std (std * force_std_scale) to allow compensatory movement.
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
   assert command is not None
   total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
-  is_standing = (total_command < 0.1).float()
+  is_standing = (total_command < command_threshold).float()
   joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
-  penalty = torch.sum(torch.square(joint_vel), dim=1)
+  error_squared = torch.square(joint_vel)
+  penalty = 1.0 - torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+
+  if force_event_name is not None:
+    event_cfg = env.event_manager.get_term_cfg(force_event_name)
+    force_scale = event_cfg.params.get("force_scale", 0.0)
+    if force_scale > 0:
+      no_force = event_cfg.func._no_force_mask
+      forced = ~no_force & (is_standing > 0)
+      if forced.any():
+        err_f = error_squared[forced]
+        penalty[forced] = 1.0 - torch.exp(
+          -torch.mean(err_f / (std * force_std_scale) ** 2, dim=1)
+        )
+
   return penalty * is_standing
 
 
@@ -253,7 +275,7 @@ def feet_air_time(
       linear_norm = torch.norm(command[:, :2], dim=1)
       angular_norm = torch.abs(command[:, 2])
       total_command = linear_norm + angular_norm
-      scale = (total_command > command_threshold).float()
+      scale = (total_command >= command_threshold).float()
       reward *= scale
   return reward
 
@@ -278,7 +300,7 @@ def feet_clearance(
       linear_norm = torch.norm(command[:, :2], dim=1)
       angular_norm = torch.abs(command[:, 2])
       total_command = linear_norm + angular_norm
-      active = (total_command > command_threshold).float()
+      active = (total_command >= command_threshold).float()
       cost = cost * active
   return cost
 
@@ -305,7 +327,7 @@ def feet_gait(
             linear_norm = torch.norm(command[:, :2], dim=1)
             angular_norm = torch.abs(command[:, 2])
             total_command = linear_norm + angular_norm
-            scale = (total_command > command_threshold).float()
+            scale = (total_command >= command_threshold).float()
             reward *= scale
     return reward
 
@@ -351,7 +373,7 @@ class feet_swing_height:
     linear_norm = torch.norm(command[:, :2], dim=1)
     angular_norm = torch.abs(command[:, 2])
     total_command = linear_norm + angular_norm
-    active = (total_command > command_threshold).float()
+    active = (total_command >= command_threshold).float()
     error = self.peak_heights / target_height - 1.0
     cost = torch.sum(torch.square(error) * first_contact.float(), dim=1) * active
     num_landings = torch.sum(first_contact.float())
@@ -383,7 +405,7 @@ def feet_slip(
   linear_norm = torch.norm(command[:, :2], dim=1)
   angular_norm = torch.abs(command[:, 2])
   total_command = linear_norm + angular_norm
-  active = (total_command > command_threshold).float()
+  active = (total_command >= command_threshold).float()
   assert contact_sensor.data.found is not None
   in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
@@ -422,7 +444,7 @@ def soft_landing(
       linear_norm = torch.norm(command[:, :2], dim=1)
       angular_norm = torch.abs(command[:, 2])
       total_command = linear_norm + angular_norm
-      active = (total_command > command_threshold).float()
+      active = (total_command >= command_threshold).float()
       cost = cost * active
   return cost
 
@@ -551,9 +573,16 @@ class variable_posture:
 class stand_still:
   """Penalize joint deviation from target pose when standing still.
 
+  Uses a penalty kernel: 1 - exp(-mean(sq(diff)) / std^2). Returns 0 at
+  target, 1 when far. Small compensatory movements are barely penalized;
+  large deviations are strongly penalized.
+
   When height_postures and base_height_command_name are set, the target pose is
   looked up from the height_postures table based on the commanded height.
   Otherwise, default_joint_pos is used.
+
+  When force_event_name is set and force_scale > 0, forced envs use a larger
+  std (std * force_std_scale) to allow compensatory movement.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
@@ -563,6 +592,10 @@ class stand_still:
     self.default_joint_pos = default_joint_pos
 
     _, joint_names = asset.find_joints(cfg.params["asset_cfg"].joint_names)
+
+    self._std = cfg.params.get("std", 0.05)
+    self._force_event_name = cfg.params.get("force_event_name", None)
+    self._force_std_scale = cfg.params.get("force_std_scale", 5.0)
 
     # Height-dependent posture lookup.
     self.base_height_command_name = cfg.params.get("base_height_command_name", None)
@@ -592,8 +625,11 @@ class stand_still:
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     height_postures: dict | None = None,
     base_height_command_name: str | None = None,
+    std: float = 0.05,
+    force_event_name: str | None = None,
+    force_std_scale: float = 5.0,
   ) -> torch.Tensor:
-    del height_postures, base_height_command_name  # Used in __init__.
+    del height_postures, base_height_command_name, std, force_event_name, force_std_scale
 
     asset: Entity = env.scene[asset_cfg.name]
 
@@ -609,13 +645,28 @@ class stand_still:
       target = self.default_joint_pos[:, asset_cfg.joint_ids]
 
     diff_angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - target
-    reward = torch.sum(torch.square(diff_angle), dim=1)
-    if command_name is not None:
-      command = env.command_manager.get_command(command_name)
-      if command is not None:
-        linear_norm = torch.norm(command[:, :2], dim=1)
-        angular_norm = torch.abs(command[:, 2])
-        total_command = linear_norm + angular_norm
-        scale = (total_command <= command_threshold).float()
-        reward *= scale
-    return reward
+    error_squared = torch.square(diff_angle)
+    penalty = 1.0 - torch.exp(-torch.mean(error_squared / (self._std**2), dim=1))
+
+    # Standing gate: zero penalty for walking envs.
+    command = env.command_manager.get_command(command_name)
+    assert command is not None, f"Command '{command_name}' not found."
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    is_standing = (total_command < command_threshold).float()
+    penalty *= is_standing
+
+    # Loosen penalty for force-disturbed envs (larger std = more tolerance).
+    if self._force_event_name is not None:
+      event_cfg = env.event_manager.get_term_cfg(self._force_event_name)
+      force_scale = event_cfg.params.get("force_scale", 0.0)
+      if force_scale > 0:
+        no_force = event_cfg.func._no_force_mask
+        forced = ~no_force & (is_standing > 0)
+        if forced.any():
+          err_f = error_squared[forced]
+          penalty[forced] = 1.0 - torch.exp(
+            -torch.mean(err_f / (self._std * self._force_std_scale) ** 2, dim=1)
+          )
+    return penalty

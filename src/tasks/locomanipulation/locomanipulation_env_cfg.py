@@ -344,8 +344,14 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "leg_joint_vel_penalty": RewardTermCfg(
       func=mdp.leg_joint_vel_penalty,
-      weight=-1.0e-3,
-      params={"command_name": "twist"},
+      weight=-0.05,
+      params={
+        "command_name": "twist",
+        "command_threshold": 0.1,
+        "std": 0.5,
+        "force_event_name": "hand_force",
+        "force_std_scale": 5.0,
+      },
     ),
     "is_terminated": RewardTermCfg(func=mdp.is_terminated, weight=-200.0),
     "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-2.5e-7),
@@ -410,6 +416,9 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "command_name": "twist",
         "command_threshold": 0.1,
         "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+        "std": 0.05,
+        "force_event_name": "hand_force",
+        "force_std_scale": 5.0,
       },
     ),
     "base_drift_penalty": RewardTermCfg(
