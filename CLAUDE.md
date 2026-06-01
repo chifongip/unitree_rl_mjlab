@@ -229,7 +229,13 @@ Policy controls 12 lower-body joints only; upper body driven by ACCAD motion dat
 
 **`variable_posture`**: Penalizes deviation from default pose with per-joint std that varies by speed regime: `std_standing` (speed < 0.1), `std_walking` (0.1–1.5), `std_running` (>= 1.5). Hard thresholds — no blending. When `height_postures` is set, the desired posture is looked up from a `{height: {joint: radians}}` table based on the commanded height.
 
-**`stand_still`**: Penalizes joint deviation from target pose only when velocity command magnitude < `command_threshold`. Also supports `height_postures` lookup. Works with `leg_joint_vel_penalty` (damps joint velocities when standing) and `body_orientation_l2` for standing stability.
+**`stand_still`** (class): Penalty `1 - exp(-mean(sq(diff)) / std^2)` on joint deviation from target pose when standing (`|v_cmd| < command_threshold`). Returns 0 at target, 1 when far. Supports `height_postures` lookup. Force-aware: when `force_event_name` is set and `force_scale > 0`, forced envs use `std * force_std_scale` (default 5x) to allow compensatory movement. Params: `std` (default 0.05), `force_event_name`, `force_std_scale` (default 5.0).
+
+**`leg_joint_vel_penalty`**: Penalty `1 - exp(-mean(sq(vel)) / std^2)` on lower-body joint velocities when standing. Same force-aware pattern as `stand_still`. Params: `std` (default 0.5), `command_threshold` (default 0.1), `force_event_name`, `force_std_scale` (default 5.0).
+
+**`base_drift_penalty`**: Penalizes XY base linear velocity when standing. Linear kernel: `clamp(v_xy / std, max=1.0)`. Logs `Metrics/base_drift_mean`.
+
+**Standing/walking gates**: Standing gates use `total_command < threshold` (penalties fire when stationary). Walking gates use `total_command >= threshold` (rewards fire when moving). Complementary — no gap at boundary.
 
 **`body_orientation_l2`**: L2 penalty on projected gravity xy (upright orientation). Optionally applies different weights for standing vs walking, gated by twist command magnitude via `standing_command_name`/`standing_threshold`/`standing_weight`/`walking_weight` (same pattern as `track_base_height`). Default: 3x penalty when stationary, 1x when walking.
 
