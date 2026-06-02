@@ -250,7 +250,7 @@ External force curriculum (`TriangleWaveForceEvent`) applies forces to end-effec
 **`TriangleWaveForceEvent`**: Replaces the old `HandForceEvent` impulse lifecycle with smoother, continuous disturbance. Three operating modes per environment:
 
 - **Standing** (`|v_cmd| < 0.1`): Force oscillates via triangle wave between `f_min` and `f_max`. Phase updates every step: `phase = |remainder(ts, 2) - 1|`, producing a 0→1→0→1 cycle. Half-cycle duration configurable via `duration_s` (default 3-5s). Force: `f = f_min + (f_max - f_min) * phase`.
-- **Walking** (`|v_cmd| >= 0.1`): Phase freezes. XY force projected to oppose walking direction via `quat_apply(base_quat, [cmd_x, cmd_y, 0])`. Z force unchanged. Simulates dragging weight.
+- **Walking** (`|v_cmd| >= 0.1`): Phase continues advancing. XY force projected to oppose walking direction via `quat_apply(base_quat, [cmd_x, cmd_y, 0])`. Z force unchanged. Simulates dragging weight.
 - **No-force** (per-episode mask): ~5% of envs get zero force, preserving baseline skills.
 
 State tensors (resampled at reset): `_force_phase_ts`, `_force_phase`, `_force_duration`, `_force_xyz_scale`, `_no_force_mask`. `constant_force` mode bypasses all logic (fixed force every step, for testing).
@@ -290,6 +290,8 @@ When playing a trained policy, `scripts/play.py` restores training-time env conf
 
 ### Robot Assets
 `src/assets/robots/<robot>/` — each exports a `get_<robot>_robot_cfg()` function and a constants module with joint names, body names, default poses.
+
+G1 constants files (`g1_constants.py`, `g1_23dof_constants.py`) use `UnitreeActuatorCfg` subclasses from `unitree_actuators.py` instead of `BuiltinPositionActuatorCfg`. Each motor type maps to a specific subclass (`N7520_14p3`, `N7520_22p5`, `N5020_16`, `W4010_25`) that provides realistic torque-speed curves (X1, X2, Y1, Y2) and friction (Fs, Fd, Va). Armature values are overridden from `reflected_inertia_from_two_stage_planetary` to match PD gain derivations. 4-bar linkage joints (ankles, waist pitch/roll) use doubled effort_limit and armature.
 
 ### Custom Runners
 `src/tasks/<type>/rl/runner.py` — `VelocityOnPolicyRunner` / `MotionTrackingOnPolicyRunner` / `LocomanipulationOnPolicyRunner` extend `MjlabOnPolicyRunner` to auto-export `policy.onnx` on save for deployment. `G1_23DOF_LocomanipulationOnPolicyRunner` overrides the symmetry function for 23-DOF.

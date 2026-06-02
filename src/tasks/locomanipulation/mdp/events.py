@@ -529,8 +529,8 @@ class TriangleWaveForceEvent:
     total_cmd = torch.norm(twist_cmd[:, :2], dim=1) + torch.abs(twist_cmd[:, 2])
     is_standing = total_cmd < self._command_threshold
 
-    # --- Update phase for standing envs only ---
-    active = is_standing & ~self._no_force_mask
+    # --- Update phase for all non-no-force envs ---
+    active = ~self._no_force_mask
     self._force_phase_ts[active] = torch.remainder(
       self._force_phase_ts[active] + 1.0 / self._force_duration[active], 2.0
     )
