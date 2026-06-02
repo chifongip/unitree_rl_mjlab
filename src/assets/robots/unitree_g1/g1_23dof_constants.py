@@ -1,17 +1,24 @@
 """Unitree G1_23DOF constants."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import mujoco
 
 from src import SRC_PATH
-from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.actuator import (
   ElectricActuator,
   reflected_inertia_from_two_stage_planetary,
 )
 from mjlab.utils.spec_config import CollisionCfg
+
+from .unitree_actuators import (
+  UnitreeActuatorCfg,
+  UnitreeActuatorCfg_N7520_14p3,
+  UnitreeActuatorCfg_N7520_22p5,
+  UnitreeActuatorCfg_N5020_16,
+)
 
 ##
 # MJCF and assets.
@@ -103,11 +110,6 @@ ACTUATOR_7520_22 = ElectricActuator(
   velocity_limit=20.0,
   effort_limit=139.0,
 )
-ACTUATOR_4010 = ElectricActuator(
-  reflected_inertia=ARMATURE_4010,
-  velocity_limit=22.0,
-  effort_limit=5.0,
-)
 
 NATURAL_FREQ = 10 * 2.0 * 3.1415926535  # 10Hz
 DAMPING_RATIO = 2.0
@@ -115,29 +117,63 @@ DAMPING_RATIO = 2.0
 STIFFNESS_5020 = ARMATURE_5020 * NATURAL_FREQ**2
 STIFFNESS_7520_14 = ARMATURE_7520_14 * NATURAL_FREQ**2
 STIFFNESS_7520_22 = ARMATURE_7520_22 * NATURAL_FREQ**2
-STIFFNESS_4010 = ARMATURE_4010 * NATURAL_FREQ**2
 
 DAMPING_5020 = 2.0 * DAMPING_RATIO * ARMATURE_5020 * NATURAL_FREQ
 DAMPING_7520_14 = 2.0 * DAMPING_RATIO * ARMATURE_7520_14 * NATURAL_FREQ
 DAMPING_7520_22 = 2.0 * DAMPING_RATIO * ARMATURE_7520_22 * NATURAL_FREQ
-DAMPING_4010 = 2.0 * DAMPING_RATIO * ARMATURE_4010 * NATURAL_FREQ
 
-# Motor config per joint pattern: (effort_limit, armature).
-# 4-bar linkage joints (ankles) use doubled values.
+# Unitree actuator configs per joint pattern.
+# 4-bar linkage joints (ankles) use doubled effort_limit and armature.
 # 23-DOF omits: waist_roll, waist_pitch, wrist_pitch, wrist_yaw.
-_G1_23DOF_MOTOR_CFGS: dict[str, tuple[float, float]] = {
-  ".*_hip_pitch_joint": (ACTUATOR_7520_14.effort_limit, ACTUATOR_7520_14.reflected_inertia),
-  ".*_hip_roll_joint": (ACTUATOR_7520_22.effort_limit, ACTUATOR_7520_22.reflected_inertia),
-  ".*_hip_yaw_joint": (ACTUATOR_7520_14.effort_limit, ACTUATOR_7520_14.reflected_inertia),
-  ".*_knee_joint": (ACTUATOR_7520_22.effort_limit, ACTUATOR_7520_22.reflected_inertia),
-  ".*_ankle_pitch_joint": (ACTUATOR_5020.effort_limit * 2, ACTUATOR_5020.reflected_inertia * 2),
-  ".*_ankle_roll_joint": (ACTUATOR_5020.effort_limit * 2, ACTUATOR_5020.reflected_inertia * 2),
-  "waist_yaw_joint": (ACTUATOR_7520_14.effort_limit, ACTUATOR_7520_14.reflected_inertia),
-  ".*_shoulder_pitch_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
-  ".*_shoulder_roll_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
-  ".*_shoulder_yaw_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
-  ".*_elbow_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
-  ".*_wrist_roll_joint": (ACTUATOR_5020.effort_limit, ACTUATOR_5020.reflected_inertia),
+_G1_23DOF_ACTUATOR_CFGS: dict[str, UnitreeActuatorCfg] = {
+  ".*_hip_pitch_joint": UnitreeActuatorCfg_N7520_14p3(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_7520_14.effort_limit, armature=ACTUATOR_7520_14.reflected_inertia,
+  ),
+  ".*_hip_roll_joint": UnitreeActuatorCfg_N7520_22p5(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_7520_22.effort_limit, armature=ACTUATOR_7520_22.reflected_inertia,
+  ),
+  ".*_hip_yaw_joint": UnitreeActuatorCfg_N7520_14p3(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_7520_14.effort_limit, armature=ACTUATOR_7520_14.reflected_inertia,
+  ),
+  ".*_knee_joint": UnitreeActuatorCfg_N7520_22p5(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_7520_22.effort_limit, armature=ACTUATOR_7520_22.reflected_inertia,
+  ),
+  ".*_ankle_pitch_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit * 2, armature=ACTUATOR_5020.reflected_inertia * 2,
+  ),
+  ".*_ankle_roll_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit * 2, armature=ACTUATOR_5020.reflected_inertia * 2,
+  ),
+  "waist_yaw_joint": UnitreeActuatorCfg_N7520_14p3(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_7520_14.effort_limit, armature=ACTUATOR_7520_14.reflected_inertia,
+  ),
+  ".*_shoulder_pitch_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit, armature=ACTUATOR_5020.reflected_inertia,
+  ),
+  ".*_shoulder_roll_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit, armature=ACTUATOR_5020.reflected_inertia,
+  ),
+  ".*_shoulder_yaw_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit, armature=ACTUATOR_5020.reflected_inertia,
+  ),
+  ".*_elbow_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit, armature=ACTUATOR_5020.reflected_inertia,
+  ),
+  ".*_wrist_roll_joint": UnitreeActuatorCfg_N5020_16(
+    target_names_expr=(), stiffness=0, damping=0,
+    effort_limit=ACTUATOR_5020.effort_limit, armature=ACTUATOR_5020.reflected_inertia,
+  ),
 }
 
 # Named gain presets: joint_pattern -> (stiffness, damping).
@@ -189,20 +225,15 @@ G1_23DOF_GAIN_PRESETS: dict[str, dict[str, tuple[float, float]]] = {
 
 def _make_g1_23dof_actuators_and_scale(
   gains: dict[str, tuple[float, float]],
-) -> tuple[tuple[BuiltinPositionActuatorCfg, ...], dict[str, float]]:
+) -> tuple[tuple[UnitreeActuatorCfg, ...], dict[str, float]]:
   """Build actuator configs and action scale from per-joint gains."""
-  actuators: list[BuiltinPositionActuatorCfg] = []
+  actuators: list[UnitreeActuatorCfg] = []
   scale: dict[str, float] = {}
   for pattern, (stiffness, damping) in gains.items():
-    effort_limit, armature = _G1_23DOF_MOTOR_CFGS[pattern]
-    actuators.append(BuiltinPositionActuatorCfg(
-      target_names_expr=(pattern,),
-      stiffness=stiffness,
-      damping=damping,
-      effort_limit=effort_limit,
-      armature=armature,
-    ))
-    scale[pattern] = 0.25 * effort_limit / stiffness
+    base_cfg = _G1_23DOF_ACTUATOR_CFGS[pattern]
+    cfg = replace(base_cfg, target_names_expr=(pattern,), stiffness=stiffness, damping=damping)
+    actuators.append(cfg)
+    scale[pattern] = 0.25 * cfg.effort_limit / stiffness
   return tuple(actuators), scale
 
 
