@@ -77,10 +77,11 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
 # Force condition presets.
 # ---------------------------------------------------------------------------
 
-_FORCE_PRESETS: dict[str, dict[str, float] | None] = {
+_FORCE_PRESETS: dict[str, dict[str, float] | dict[str, dict[str, float]] | None] = {
     "none": None,
     "medium": {"x": 0.0, "y": 0.0, "z": -15.0},
     "large": {"x": 0.0, "y": 0.0, "z": -30.0},
+    # "left_only": {"left_wrist_yaw_link": {"x": 0.0, "y": 0.0, "z": -30.0}},
 }
 
 
@@ -232,7 +233,7 @@ class EvalCombo:
     vel_y: float
     ang_z: float
     force_name: str
-    force_dict: dict[str, float] | None
+    force_dict: dict[str, float] | dict[str, dict[str, float]] | None
     pose_name: str
     pose_dict: dict[str, float]
 

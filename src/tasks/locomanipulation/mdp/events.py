@@ -16,6 +16,61 @@ if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.viewer.debug_visualizer import DebugVisualizer
 
+_AXES = ("x", "y", "z")
+
+
+def _resolve_constant_forces(
+  constant_force: dict[str, float] | dict[str, dict[str, float]],
+  num_envs: int,
+  num_bodies: int,
+  body_names: tuple[str, ...] | None,
+  device: torch.device,
+  body_frame: bool = False,
+  asset: Entity | None = None,
+) -> torch.Tensor:
+  """Build (num_envs, num_bodies, 3) forces tensor from constant_force config.
+
+  Supports two formats:
+    - Uniform: {"x": ..., "y": ..., "z": ...} -- same force on all bodies.
+    - Per-body: {"body_name": {"x": ..., "y": ..., "z": ...}, ...} -- per-body forces.
+
+  When body_frame=True, forces are defined in the robot's body frame and
+  rotated to world frame using the root body orientation (not per-body
+  orientation — all bodies share the root quat).
+  """
+  forces = torch.zeros(num_envs, num_bodies, 3, device=device)
+
+  # Detect format: if the first value is a dict, it's per-body; otherwise uniform.
+  first_val = next(iter(constant_force.values()))
+  if isinstance(first_val, dict):
+    # Per-body format.
+    if body_names is None:
+      raise ValueError(
+        "Per-body constant_force requires body_names in asset_cfg"
+      )
+    name_to_idx = {name: i for i, name in enumerate(body_names)}
+    for body_name, body_force in constant_force.items():
+      if body_name not in name_to_idx:
+        raise ValueError(
+          f"Body '{body_name}' not in asset_cfg.body_names {body_names}"
+        )
+      idx = name_to_idx[body_name]
+      for axis, key in enumerate(_AXES):
+        forces[:, idx, axis] = body_force.get(key, 0.0)
+  else:
+    # Uniform format.
+    for axis, key in enumerate(_AXES):
+      forces[:, :, axis] = constant_force.get(key, 0.0)
+
+  if body_frame:
+    assert asset is not None, "asset is required when body_frame=True"
+    root_quat = asset.data.root_link_quat_w  # (num_envs, 4) wxyz
+    # Broadcast root quat across all bodies and rotate.
+    q = root_quat.unsqueeze(1).expand(-1, num_bodies, -1).reshape(-1, 4)
+    forces = quat_apply(q, forces.reshape(-1, 3)).reshape(num_envs, num_bodies, 3)
+
+  return forces
+
 
 class MaxForceEstimator:
   """Estimate maximum allowable end-effector forces via Jacobian transpose.
@@ -135,6 +190,7 @@ class HandForceEvent:
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self._asset: Entity = env.scene[cfg.params["asset_cfg"].name]
     self._body_ids = cfg.params["asset_cfg"].body_ids
+    self._body_names = cfg.params["asset_cfg"].body_names
     self._num_bodies = (
       len(self._body_ids)
       if isinstance(self._body_ids, list)
@@ -181,7 +237,7 @@ class HandForceEvent:
     force_scale: float = 0.0,
     zero_force_prob: dict[str, float] | None = None,
     force_range: dict[str, tuple[float, float]] | None = None,
-    constant_force: dict[str, float] | None = None,
+    constant_force: dict[str, float] | dict[str, dict[str, float]] | None = None,
     max_force_estimation: bool = False,
     **kwargs: object,
   ) -> None:
@@ -189,10 +245,12 @@ class HandForceEvent:
 
     # Constant force mode: apply a fixed force every step, bypass impulse lifecycle.
     if constant_force is not None:
-      n = self._num_envs
-      forces = torch.zeros(n, self._num_bodies, 3, device=self._device)
-      for axis, key in enumerate(("x", "y", "z")):
-        forces[:, :, axis] = constant_force.get(key, 0.0)
+      body_frame = kwargs.get("body_frame", False)
+      forces = _resolve_constant_forces(
+        constant_force, self._num_envs, self._num_bodies,
+        self._body_names, self._device,
+        body_frame=body_frame, asset=self._asset,
+      )
       self._asset.write_external_wrench_to_sim(
         forces, torch.zeros_like(forces), body_ids=self._body_ids
       )
@@ -412,6 +470,7 @@ class TriangleWaveForceEvent:
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self._asset: Entity = env.scene[cfg.params["asset_cfg"].name]
     self._body_ids = cfg.params["asset_cfg"].body_ids
+    self._body_names = cfg.params["asset_cfg"].body_names
     self._num_bodies = (
       len(self._body_ids)
       if isinstance(self._body_ids, list)
@@ -433,13 +492,15 @@ class TriangleWaveForceEvent:
         constraint_joint_names=cfg.params["constraint_joint_names"],
       )
 
-    # Per-env Dirichlet scaling for axis-wise force diversity.
+    # Per-body Dirichlet scaling for axis-wise force diversity.
     self._force_xyz_scale = torch.distributions.Dirichlet(
       torch.tensor([1.0, 1.0, 1.0], device=self._device)
-    ).sample((self._num_envs,))
+    ).sample((self._num_envs, self._num_bodies))
 
-    # Triangle wave state.
-    self._force_phase_ts = torch.rand(self._num_envs, 1, device=self._device)
+    # Triangle wave state (per-body independent phase).
+    self._force_phase_ts = torch.rand(
+      self._num_envs, self._num_bodies, 1, device=self._device
+    )
     self._force_phase = torch.abs(
       torch.remainder(self._force_phase_ts, 2.0) - 1.0
     )
@@ -448,7 +509,7 @@ class TriangleWaveForceEvent:
     self._dur_hi_steps = int(dur_hi / self._step_dt)
     self._force_duration = torch.randint(
       self._dur_lo_steps, self._dur_hi_steps + 1,
-      (self._num_envs, 1), device=self._device,
+      (self._num_envs, self._num_bodies, 1), device=self._device,
     ).float()
 
     # Standing/walking gate.
@@ -461,6 +522,12 @@ class TriangleWaveForceEvent:
       torch.rand(self._num_envs, device=self._device) < self._no_force_ratio
     )
 
+    # No-projection mask: walking envs that skip drag projection (keep full direction).
+    self._no_projection_ratio = cfg.params.get("no_projection_ratio", 0.0)
+    self._no_projection_mask = (
+      torch.rand(self._num_envs, device=self._device) < self._no_projection_ratio
+    )
+
   def __call__(
     self,
     env: ManagerBasedRlEnv,
@@ -471,7 +538,7 @@ class TriangleWaveForceEvent:
     force_range_max: dict[str, tuple[float, float]] | None = None,
     force_scale: float = 0.0,
     force_range: dict[str, tuple[float, float]] | None = None,
-    constant_force: dict[str, float] | None = None,
+    constant_force: dict[str, float] | dict[str, dict[str, float]] | None = None,
     max_force_estimation: bool = False,
     no_force_ratio: float = 0.0,
     body_point_offset_range: dict[str, tuple[float, float]] | None = None,
@@ -484,10 +551,12 @@ class TriangleWaveForceEvent:
 
     # --- Constant force mode: bypass everything ---
     if constant_force is not None:
-      n = self._num_envs
-      forces = torch.zeros(n, self._num_bodies, 3, device=self._device)
-      for axis, key in enumerate(("x", "y", "z")):
-        forces[:, :, axis] = constant_force.get(key, 0.0)
+      body_frame = kwargs.get("body_frame", False)
+      forces = _resolve_constant_forces(
+        constant_force, self._num_envs, self._num_bodies,
+        self._body_names, self._device,
+        body_frame=body_frame, asset=self._asset,
+      )
       self._asset.write_external_wrench_to_sim(
         forces, torch.zeros_like(forces), body_ids=self._body_ids
       )
@@ -512,8 +581,8 @@ class TriangleWaveForceEvent:
             ee_force_maxes[ee_idx][:, axis].clamp(hard_lo, hard_hi) * effective_scale
           )
       for ee_idx in range(len(ee_force_mins)):
-        ee_force_mins[ee_idx] *= self._force_xyz_scale
-        ee_force_maxes[ee_idx] *= self._force_xyz_scale
+        ee_force_mins[ee_idx] *= self._force_xyz_scale[:, ee_idx, :]
+        ee_force_maxes[ee_idx] *= self._force_xyz_scale[:, ee_idx, :]
       use_per_ee_bounds = True
     else:
       if force_range_max is not None:
@@ -544,15 +613,16 @@ class TriangleWaveForceEvent:
       for ee_idx in range(self._num_bodies):
         f_min = ee_force_mins[ee_idx]
         f_max = ee_force_maxes[ee_idx]
-        forces[:, ee_idx, :] = f_min + (f_max - f_min) * self._force_phase
+        forces[:, ee_idx, :] = f_min + (f_max - f_min) * self._force_phase[:, ee_idx, :]
     else:
       for axis, key in enumerate(("x", "y", "z")):
         lo, hi = force_range.get(key, (0.0, 0.0))
-        forces[:, :, axis] = lo + (hi - lo) * self._force_phase.squeeze(1)
+        forces[:, :, axis] = lo + (hi - lo) * self._force_phase[:, :, 0]
 
     # --- Walking resistance projection ---
     walking = ~is_standing & ~self._no_force_mask
-    if walking.any():
+    walking_projected = walking & ~self._no_projection_mask
+    if walking_projected.any():
       base_quat = self._asset.data.body_link_quat_w[:, 0, :]
       cmd_xy = twist_cmd[:, :2]
       cmd_3d = torch.cat(
@@ -561,14 +631,17 @@ class TriangleWaveForceEvent:
       walk_dir = quat_apply(base_quat, cmd_3d)[:, :2]
       walk_dir_norm = torch.norm(walk_dir, dim=-1, keepdim=True) + 1e-6
       resist_unit = torch.zeros_like(walk_dir)
-      resist_unit[walking] = -walk_dir[walking] / walk_dir_norm[walking]
+      resist_unit[walking_projected] = (
+        -walk_dir[walking_projected] / walk_dir_norm[walking_projected]
+      )
 
       for ee_idx in range(self._num_bodies):
         force_xy = forces[:, ee_idx, :2]
         proj = torch.sum(
-          force_xy[walking] * resist_unit[walking], dim=-1, keepdim=True
+          force_xy[walking_projected] * resist_unit[walking_projected],
+          dim=-1, keepdim=True,
         )
-        force_xy[walking] = torch.abs(proj) * resist_unit[walking]
+        force_xy[walking_projected] = torch.abs(proj) * resist_unit[walking_projected]
         forces[:, ee_idx, :2] = force_xy
 
     # --- Zero out no-force envs ---
@@ -602,21 +675,25 @@ class TriangleWaveForceEvent:
       env_ids = slice(None)
 
     n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
-    self._force_phase_ts[env_ids] = torch.rand(n, 1, device=self._device)
+    b = self._num_bodies
+    self._force_phase_ts[env_ids] = torch.rand(n, b, 1, device=self._device)
     self._force_phase[env_ids] = torch.abs(
       torch.remainder(self._force_phase_ts[env_ids], 2.0) - 1.0
     )
     self._force_duration[env_ids] = torch.randint(
       self._dur_lo_steps, self._dur_hi_steps + 1,
-      (n, 1), device=self._device,
+      (n, b, 1), device=self._device,
     ).float()
 
     self._force_xyz_scale[env_ids] = torch.distributions.Dirichlet(
       torch.tensor([1.0, 1.0, 1.0], device=self._device)
-    ).sample((n,))
+    ).sample((n, b))
 
     self._no_force_mask[env_ids] = (
       torch.rand(n, device=self._device) < self._no_force_ratio
+    )
+    self._no_projection_mask[env_ids] = (
+      torch.rand(n, device=self._device) < self._no_projection_ratio
     )
 
   def debug_vis(self, visualizer: DebugVisualizer) -> None:

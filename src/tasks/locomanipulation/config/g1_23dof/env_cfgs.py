@@ -174,6 +174,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       ),
       "command_name": "twist",
       "command_threshold": 0.1,
+      "no_projection_ratio": 0.2,
     },
   )
   cfg.curriculum["force_curriculum"] = CurriculumTermCfg(
@@ -413,6 +414,13 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       "right_elbow_joint": 0.0,
       "right_wrist_roll_joint": 0.0,
     }
+    # Per-hand constant force (per-body format, body_frame rotates with robot):
+    # cfg.events["hand_force"].params["constant_force"] = {
+    #     "left_wrist_roll_rubber_hand": {"x": 5.0, "y": -5.0, "z": -20.0},
+    #     "right_wrist_roll_rubber_hand": {"x": 5.0, "y": 5.0, "z": -20.0},
+    # }
+    # cfg.events["hand_force"].params["body_frame"] = True
+    # Uniform force (same on both hands):
     # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
     cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
     cfg.commands["base_height"].fixed_height = 0.785
