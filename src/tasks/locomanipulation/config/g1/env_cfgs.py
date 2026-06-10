@@ -41,6 +41,9 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     "right_knee_joint",
     "right_ankle_pitch_joint",
     "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
   )
 
   robot_cfg, action_scale = get_g1_robot_cfg(preset="unitree_stiff")
@@ -102,6 +105,9 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     r".*_knee_joint",
     r".*_ankle_pitch_joint",
     r".*_ankle_roll_joint",
+    r"waist_yaw_joint",
+    r"waist_roll_joint",
+    r"waist_pitch_joint",
   )
 
   # Upper-body motion playback from ACCAD dataset.
@@ -110,8 +116,10 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
+    motion_dof_indices=(15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28),
     default_pose_ratio=1.0,
     waist_yaw_only=True,
+    exclude_waist=True,
     pose_only=True,
   )
 
@@ -215,6 +223,21 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     },
   )
   cfg.commands["base_height"].nominal_height_ratio = 0.05
+
+  cfg.curriculum["waist_yaw_scale"] = CurriculumTermCfg(
+    func=mdp.waist_yaw_scale_staged,
+    params={
+      "command_name": "waist_yaw",
+      "stages": [
+        {"step": 0, "scale": 0.0},
+        {"step": 2000 * 24, "scale": 0.2},
+        {"step": 4500 * 24, "scale": 0.4},
+        {"step": 7500 * 24, "scale": 0.6},
+        {"step": 11000 * 24, "scale": 0.8},
+        {"step": 15000 * 24, "scale": 1.0},
+      ],
+    },
+  )
 
   # Tighten angular velocity tracking reward for low-speed rotation.
   cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.5)
@@ -391,9 +414,6 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     )
 
     cfg.actions["upper_body_motion"].fixed_upper_body_pose = {
-      "waist_yaw_joint": 0.0,
-      "waist_roll_joint": 0.0,
-      "waist_pitch_joint": 0.0,
       "left_shoulder_pitch_joint": 0.0,
       "left_shoulder_roll_joint": 0.0,
       "left_shoulder_yaw_joint": 0.0,
@@ -419,6 +439,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
     cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
     cfg.commands["base_height"].fixed_height = 0.785
+    cfg.commands["waist_yaw"].fixed_waist_yaw = 0.0
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:

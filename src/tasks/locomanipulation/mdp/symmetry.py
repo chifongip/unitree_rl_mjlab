@@ -72,6 +72,7 @@ class G1Symmetry:
   """Precomputes mirroring tensors for G1 29-DOF locomanipulation observations and actions."""
 
   _N_JOINTS = 29
+  _N_POLICY_JOINTS = 15  # 12 leg + 3 waist (yaw, roll, pitch)
   _SWAP_PARTNERS = _JOINT_SWAP_PARTNERS
   _SIGN_FLIP = _SIGN_FLIP_JOINTS
 
@@ -83,13 +84,13 @@ class G1Symmetry:
     self._joint_swap_idx = self._build_swap_index(self._N_JOINTS, self._SWAP_PARTNERS)
     self._joint_sign_mask = self._build_sign_mask(self._N_JOINTS, self._SIGN_FLIP)
 
-    # Build action mirroring tensors (12-DOF lower body).
-    # Lower-body indices 0-11 map to full-body indices 0-11.
-    self._action_swap_idx = self._build_swap_index(12, {
-      k: v for k, v in self._SWAP_PARTNERS.items() if k < 12
+    # Build action mirroring tensors (15-DOF lower body + waist for 29-DOF,
+    # 13-DOF for 23-DOF). Indices 0-11 are legs, 12+ are waist joints.
+    self._action_swap_idx = self._build_swap_index(self._N_POLICY_JOINTS, {
+      k: v for k, v in self._SWAP_PARTNERS.items() if k < self._N_POLICY_JOINTS
     })
-    self._action_sign_mask = self._build_sign_mask(12, {
-      j for j in self._SIGN_FLIP if j < 12
+    self._action_sign_mask = self._build_sign_mask(self._N_POLICY_JOINTS, {
+      j for j in self._SIGN_FLIP if j < self._N_POLICY_JOINTS
     })
 
     # Build per-group observation mirror plans.
@@ -152,6 +153,7 @@ class G1_23DOFSymmetry(G1Symmetry):
   """Precomputes mirroring tensors for G1 23-DOF locomanipulation observations and actions."""
 
   _N_JOINTS = 23
+  _N_POLICY_JOINTS = 13  # 12 leg + 1 waist (yaw)
   _SWAP_PARTNERS = _JOINT_SWAP_PARTNERS_23DOF
   _SIGN_FLIP = _SIGN_FLIP_JOINTS_23DOF
 
@@ -280,11 +282,15 @@ def _get_term_mirror(term_name: str) -> _TermMirror | None:
   if term_name in ("joint_pos", "joint_vel"):
     return _SwapAndFlipJoints(29, _JOINT_SWAP_PARTNERS, _SIGN_FLIP_JOINTS)
 
-  # Action term (12-DOF lower body).
+  # Action term (15-DOF: 12 leg + 3 waist).
   if term_name == "actions":
-    return _SwapAndFlipJoints(12, {
-      k: v for k, v in _JOINT_SWAP_PARTNERS.items() if k < 12
-    }, {j for j in _SIGN_FLIP_JOINTS if j < 12})
+    return _SwapAndFlipJoints(15, {
+      k: v for k, v in _JOINT_SWAP_PARTNERS.items() if k < 15
+    }, {j for j in _SIGN_FLIP_JOINTS if j < 15})
+
+  # Waist yaw command — negate (yaw flips under sagittal mirror).
+  if term_name == "waist_yaw_command":
+    return _NegateIndices((0,))
 
   # Foot terms (swap left/right).
   if term_name in ("foot_height", "foot_air_time", "foot_contact"):
@@ -326,11 +332,15 @@ def _get_term_mirror_23dof(term_name: str) -> _TermMirror | None:
   if term_name in ("joint_pos", "joint_vel"):
     return _SwapAndFlipJoints(23, _JOINT_SWAP_PARTNERS_23DOF, _SIGN_FLIP_JOINTS_23DOF)
 
-  # Action term (12-DOF lower body).
+  # Action term (13-DOF: 12 leg + 1 waist_yaw).
   if term_name == "actions":
-    return _SwapAndFlipJoints(12, {
-      k: v for k, v in _JOINT_SWAP_PARTNERS_23DOF.items() if k < 12
-    }, {j for j in _SIGN_FLIP_JOINTS_23DOF if j < 12})
+    return _SwapAndFlipJoints(13, {
+      k: v for k, v in _JOINT_SWAP_PARTNERS_23DOF.items() if k < 13
+    }, {j for j in _SIGN_FLIP_JOINTS_23DOF if j < 13})
+
+  # Waist yaw command — negate (yaw flips under sagittal mirror).
+  if term_name == "waist_yaw_command":
+    return _NegateIndices((0,))
 
   # Foot terms (swap left/right).
   if term_name in ("foot_height", "foot_air_time", "foot_contact"):

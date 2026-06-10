@@ -47,6 +47,15 @@ class UpperBodyMotionAction(ActionTerm):
     asset_cfg.resolve(self._env.scene)
     self._joint_ids = asset_cfg.joint_ids
 
+    # Exclude all waist joints from the upper-body set when policy controls them.
+    if cfg.exclude_waist:
+      all_names = self._entity.joint_names
+      waist_names = {"waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"}
+      non_waist = [
+        i for i, jid in enumerate(self._joint_ids) if all_names[jid] not in waist_names
+      ]
+      self._joint_ids = [self._joint_ids[i] for i in non_waist]
+
     # Find positions of waist_roll and waist_pitch to zero out when yaw_only is set.
     if cfg.waist_yaw_only:
       all_names = self._entity.joint_names
@@ -280,6 +289,9 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
 
   waist_yaw_only: bool = False
   """If True, only apply waist_yaw_joint from motion data; zero out waist_roll and waist_pitch."""
+
+  exclude_waist: bool = False
+  """If True, exclude all waist_*_joint from the upper-body set (policy controls them)."""
 
   pose_only: bool = False
   """If True, sample a single random frame at reset and hold it for the full episode

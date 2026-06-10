@@ -26,6 +26,7 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
 from src.tasks.locomanipulation.mdp.height_command import BaseHeightCommandCfg
+from src.tasks.locomanipulation.mdp.waist_yaw_command import WaistYawCommandCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
@@ -73,6 +74,10 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
     "base_height_command": ObservationTermCfg(
       func=mdp.generated_commands,
       params={"command_name": "base_height"},
+    ),
+    "waist_yaw_command": ObservationTermCfg(
+      func=mdp.generated_commands,
+      params={"command_name": "waist_yaw"},
     ),
     "phase": ObservationTermCfg(
       func=mdp.phase,
@@ -201,6 +206,13 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       height_scale=0.0,
       debug_vis=True,
     ),
+    "waist_yaw": WaistYawCommandCfg(
+      entity_name="robot",
+      resampling_time_range=(3.0, 8.0),
+      ranges=(-1.5708, 1.5708),
+      yaw_scale=0.0,
+      debug_vis=True,
+    ),
   }
 
   ##
@@ -294,6 +306,19 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       params={
         "command_name": "base_height",
         "std": math.sqrt(0.05),
+        "standing_command_name": "twist",
+        "standing_threshold": 0.1,
+        "standing_weight": 1.0,
+        "walking_weight": 0.5,
+      },
+    ),
+    "track_waist_yaw": RewardTermCfg(
+      func=mdp.track_waist_yaw,
+      weight=1.0,
+      params={
+        "command_name": "waist_yaw",
+        "std": math.sqrt(0.05),
+        "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_yaw_joint",)),
         "standing_command_name": "twist",
         "standing_threshold": 0.1,
         "standing_weight": 1.0,

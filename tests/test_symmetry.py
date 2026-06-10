@@ -70,9 +70,9 @@ class _MockEnv:
 
 # ── Actor observation layout (29-DOF) ─────────────────────────────────────────
 
-_ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "command", "phase",
-                "joint_pos", "joint_vel", "actions"]
-_ACTOR_DIMS = [3, 3, 3, 2, 29, 29, 12]  # total = 81
+_ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "command", "base_height_command",
+                "waist_yaw_command", "phase", "joint_pos", "joint_vel", "actions"]
+_ACTOR_DIMS = [3, 3, 3, 1, 1, 2, 29, 29, 15]  # total = 86
 
 _CRITIC_EXTRA_TERMS = ["base_lin_vel", "foot_height", "foot_air_time",
                        "foot_contact", "foot_contact_forces", "wrist_force"]
@@ -84,7 +84,7 @@ _CRITIC_DIMS = _ACTOR_DIMS + _CRITIC_EXTRA_DIMS  # total = 102
 # ── Actor observation layout (23-DOF) ─────────────────────────────────────────
 
 _ACTOR_TERMS_23DOF = list(_ACTOR_TERMS)
-_ACTOR_DIMS_23DOF = [3, 3, 3, 2, 23, 23, 12]  # total = 69
+_ACTOR_DIMS_23DOF = [3, 3, 3, 1, 1, 2, 23, 23, 13]  # total = 69
 
 _CRITIC_TERMS_23DOF = _ACTOR_TERMS_23DOF + list(_CRITIC_EXTRA_TERMS)
 _CRITIC_DIMS_23DOF = _ACTOR_DIMS_23DOF + list(_CRITIC_EXTRA_DIMS)  # total = 90
@@ -130,7 +130,11 @@ def _make_critic_obs(batch: int = 4) -> torch.Tensor:
 
 
 def _make_actions(batch: int = 4) -> torch.Tensor:
-  return torch.randn(batch, 12)
+  return torch.randn(batch, 15)
+
+
+def _make_actions_23dof(batch: int = 4) -> torch.Tensor:
+  return torch.randn(batch, 13)
 
 
 def _make_obs_td(batch: int = 4) -> TensorDict:
@@ -206,10 +210,10 @@ class TestActionMirror:
   def test_swap_left_right(self):
     """Left leg actions should swap with right leg actions."""
     sym = _make_symmetry()
-    actions = torch.zeros(1, 12)
+    actions = torch.zeros(1, 15)
     # Set left leg to values 0-5, right leg to values 6-11.
     actions[0, :6] = torch.arange(6, dtype=torch.float)
-    actions[0, 6:] = torch.arange(6, 12, dtype=torch.float)
+    actions[0, 6:12] = torch.arange(6, 12, dtype=torch.float)
 
     mirrored = sym.mirror_actions(actions)
 
@@ -223,6 +227,20 @@ class TestActionMirror:
       assert mirrored[0, i].item() == pytest.approx(expected), (
         f"Action {i}: expected {expected}, got {mirrored[0, i].item()}"
       )
+
+  def test_waist_joints_mirrored(self):
+    """Waist yaw (idx 12) and roll (idx 13) should be negated; pitch (idx 14) unchanged."""
+    sym = _make_symmetry()
+    actions = torch.zeros(1, 15)
+    actions[0, 12] = 0.5   # waist_yaw — should negate
+    actions[0, 13] = 0.3   # waist_roll — should negate
+    actions[0, 14] = 0.1   # waist_pitch — unchanged
+
+    mirrored = sym.mirror_actions(actions)
+
+    assert mirrored[0, 12].item() == pytest.approx(-0.5)
+    assert mirrored[0, 13].item() == pytest.approx(-0.3)
+    assert mirrored[0, 14].item() == pytest.approx(0.1)
 
   def test_double_mirror_identity(self):
     """mirror(mirror(actions)) == actions."""
@@ -286,6 +304,13 @@ class TestTermMirrors:
     m.apply(x, None)
     assert torch.allclose(x, torch.tensor([[4.0, -5.0, 6.0, 1.0, -2.0, 3.0]]))
 
+  def test_waist_yaw_command(self):
+    """waist_yaw_command should negate index 0 (yaw flips under sagittal mirror)."""
+    m = _NegateIndices((0,))
+    x = torch.tensor([[0.5]])
+    m.apply(x, None)
+    assert torch.allclose(x, torch.tensor([[-0.5]]))
+
 
 # ── Tests: Full observation mirroring ────────────────────────────────────────
 
@@ -306,8 +331,9 @@ class TestObsMirror:
     """Verify joint_pos segment is correctly swapped."""
     sym = _make_symmetry()
     obs = torch.zeros(1, sum(_ACTOR_DIMS))
-    # Find joint_pos offset: base_ang_vel(3) + projected_gravity(3) + command(3) + phase(2) = 11
-    jp_offset = 11
+    # Find joint_pos offset: base_ang_vel(3) + projected_gravity(3) + command(3)
+    # + base_height_command(1) + waist_yaw_command(1) + phase(2) = 13
+    jp_offset = 13
     # Set left leg joints to 100+index, right leg to 200+index.
     for i in range(6):
       obs[0, jp_offset + i] = 100 + i       # left
@@ -481,9 +507,9 @@ class TestJointSwapAndSign23DOF:
 class TestActionMirror23DOF:
   def test_swap_left_right(self):
     sym = _make_symmetry_23dof()
-    actions = torch.zeros(1, 12)
+    actions = torch.zeros(1, 13)
     actions[0, :6] = torch.arange(6, dtype=torch.float)
-    actions[0, 6:] = torch.arange(6, 12, dtype=torch.float)
+    actions[0, 6:12] = torch.arange(6, 12, dtype=torch.float)
     mirrored = sym.mirror_actions(actions)
     for i in range(6):
       j = i + 6
@@ -492,9 +518,17 @@ class TestActionMirror23DOF:
         expected = -expected
       assert mirrored[0, i].item() == pytest.approx(expected)
 
+  def test_waist_yaw_mirrored(self):
+    """Waist yaw (idx 12) should be negated in 23-DOF."""
+    sym = _make_symmetry_23dof()
+    actions = torch.zeros(1, 13)
+    actions[0, 12] = 0.5
+    mirrored = sym.mirror_actions(actions)
+    assert mirrored[0, 12].item() == pytest.approx(-0.5)
+
   def test_double_mirror_identity(self):
     sym = _make_symmetry_23dof()
-    actions = _make_actions(batch=8)
+    actions = _make_actions_23dof(batch=8)
     mirrored = sym.mirror_actions(actions)
     double_mirrored = sym.mirror_actions(mirrored)
     assert torch.allclose(actions, double_mirrored, atol=1e-6)
@@ -516,8 +550,9 @@ class TestObsMirror23DOF:
   def test_joint_pos_segment_swap_23dof(self):
     sym = _make_symmetry_23dof()
     obs = torch.zeros(1, sum(_ACTOR_DIMS_23DOF))
-    # joint_pos offset: base_ang_vel(3) + projected_gravity(3) + command(3) + phase(2) = 11
-    jp_offset = 11
+    # joint_pos offset: base_ang_vel(3) + projected_gravity(3) + command(3)
+    # + base_height_command(1) + waist_yaw_command(1) + phase(2) = 13
+    jp_offset = 13
     # Set left leg joints to 100+index, right leg to 200+index.
     for i in range(6):
       obs[0, jp_offset + i] = 100 + i
@@ -558,7 +593,7 @@ class TestAugmentationFunction23DOF:
     env = _make_mock_env_23dof()
     batch = 4
     obs = _make_obs_td_23dof(batch)
-    actions = _make_actions(batch)
+    actions = _make_actions_23dof(batch)
     aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
     assert aug_obs is not None
     assert aug_actions is not None
@@ -577,7 +612,7 @@ class TestAugmentationFunction23DOF:
   def test_batch_doubling_actions_only(self):
     env = _make_mock_env_23dof()
     batch = 4
-    actions = _make_actions(batch)
+    actions = _make_actions_23dof(batch)
     aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, None, actions)
     assert aug_obs is None
     assert aug_actions is not None
@@ -587,7 +622,7 @@ class TestAugmentationFunction23DOF:
     env = _make_mock_env_23dof()
     batch = 4
     obs = _make_obs_td_23dof(batch)
-    actions = _make_actions(batch)
+    actions = _make_actions_23dof(batch)
     aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
     assert torch.allclose(aug_actions[:batch], actions, atol=1e-6)
     for key in obs.keys():
@@ -597,7 +632,7 @@ class TestAugmentationFunction23DOF:
     env = _make_mock_env_23dof()
     batch = 4
     obs = _make_obs_td_23dof(batch)
-    actions = _make_actions(batch)
+    actions = _make_actions_23dof(batch)
     aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
     assert not torch.allclose(aug_actions[:batch], aug_actions[batch:], atol=1e-6)
 
@@ -605,7 +640,7 @@ class TestAugmentationFunction23DOF:
     env = _make_mock_env_23dof()
     batch = 4
     obs = _make_obs_td_23dof(batch)
-    actions = _make_actions(batch)
+    actions = _make_actions_23dof(batch)
     aug_obs, aug_actions = g1_23dof_locomanipulation_symmetry(env, obs, actions)
     aug_obs2, aug_actions2 = g1_23dof_locomanipulation_symmetry(env, aug_obs, aug_actions)
     for key in obs.keys():
@@ -769,8 +804,8 @@ class TestHistoryFullObsMirror:
     total_dim = sum(d * _HISTORY_LEN for d in _ACTOR_DIMS)
     obs = torch.zeros(1, total_dim)
 
-    # joint_pos offset in flattened obs: (3+3+3+2) * 4 = 44
-    jp_offset = sum(_ACTOR_DIMS[:4]) * _HISTORY_LEN  # 11 * 4 = 44
+    # joint_pos offset in flattened obs: (3+3+3+1+1+2) * 4 = 52
+    jp_offset = sum(_ACTOR_DIMS[:6]) * _HISTORY_LEN  # 13 * 4 = 52
     feature_dim = 29
 
     # Set frame 0 left leg joints to 100+idx, right leg to 200+idx.

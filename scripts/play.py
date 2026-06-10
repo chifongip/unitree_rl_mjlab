@@ -45,11 +45,15 @@ class KeyboardCommandOverride:
         self.height_active: bool = False
         self.nominal_height: float = nominal_height
 
+        self.target_waist_yaw: float = 0.0
+        self.waist_yaw_active: bool = False
+
         self.decay: float = decay
 
         self.vel_step: float = 0.1
         self.ang_step: float = 0.1
         self.height_step: float = 0.02
+        self.waist_yaw_step: float = 0.05
 
         self._last_key_time: float = 0.0
         self._debounce_s: float = 0.05
@@ -63,7 +67,9 @@ class KeyboardCommandOverride:
 
         from mjlab.viewer.native.keys import (
             KEY_KP_0,
+            KEY_KP_1,
             KEY_KP_2,
+            KEY_KP_3,
             KEY_KP_4,
             KEY_KP_5,
             KEY_KP_6,
@@ -95,17 +101,24 @@ class KeyboardCommandOverride:
             self.target_vel_x = 0.0
             self.target_vel_y = 0.0
             self.target_ang_vel_z = 0.0
+        elif key == KEY_KP_1:
+            self.target_waist_yaw += self.waist_yaw_step
+        elif key == KEY_KP_3:
+            self.target_waist_yaw -= self.waist_yaw_step
         elif key == KEY_KP_0:
             self.target_height = self.nominal_height
+            self.target_waist_yaw = 0.0
         else:
             handled = False
 
         if handled:
             self.vel_active = True
             self.height_active = True
+            self.waist_yaw_active = True
             print(
                 f"\r[KB] vel=({self.target_vel_x:+.1f}, {self.target_vel_y:+.1f}, "
-                f"{self.target_ang_vel_z:+.1f}) h={self.target_height:.3f}  ",
+                f"{self.target_ang_vel_z:+.1f}) h={self.target_height:.3f} "
+                f"waist={self.target_waist_yaw:+.3f}  ",
                 end="",
                 flush=True,
             )
@@ -146,6 +159,14 @@ def _patch_command_compute(term, override: KeyboardCommandOverride, term_type: s
             original_compute(dt)
             if override.height_active:
                 term._height_command[:, 0] = override.target_height
+
+        term.compute = patched_compute
+
+    elif term_type == "waist_yaw":
+        def patched_compute(dt):
+            original_compute(dt)
+            if override.waist_yaw_active:
+                term._waist_yaw_command[:, 0] = override.target_waist_yaw
 
         term.compute = patched_compute
 
@@ -512,7 +533,7 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     override = KeyboardCommandOverride(nominal_height=nominal_height)
 
-    for term_name in ("twist", "base_height"):
+    for term_name in ("twist", "base_height", "waist_yaw"):
       if term_name in cmd_mgr._terms:
         _patch_command_compute(cmd_mgr._terms[term_name], override, term_name)
       else:

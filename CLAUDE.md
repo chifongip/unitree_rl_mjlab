@@ -58,7 +58,8 @@ python scripts/play.py Unitree-G1-Flat --checkpoint_file=... --viewer viser
 | KP_7 / KP_9 | ang_vel_z +/- | 0.1 rad/s |
 | KP_ADD / KP_SUBTRACT | height +/- | 0.02 m |
 | KP_5 | zero all velocity | — |
-| KP_0 | reset height to nominal | — |
+| KP_1 / KP_3 | waist_yaw +/- | 0.05 rad |
+| KP_0 | reset height + waist yaw | — |
 
 ### Evaluation
 ```bash
@@ -206,7 +207,7 @@ Tasks are registered via `register_mjlab_task()` in `src/tasks/<type>/config/<ro
 
 - **Velocity** (`src/tasks/velocity/`): Velocity tracking with flat/rough terrain.
 - **Tracking** (`src/tasks/tracking/`): Motion imitation from NPZ reference motions.
-- **Locomanipulation** (`src/tasks/locomanipulation/`): Lower-body policy (12 DOF) with upper-body motion playback from ACCAD dataset. G1 only.
+- **Locomanipulation** (`src/tasks/locomanipulation/`): Lower-body + waist policy (15 DOF for 29-DOF, 13 DOF for 23-DOF) with upper-body motion playback from ACCAD dataset. G1 only. Waist yaw has a dedicated angle command (±90°).
 
 Robot-specific configs live in `config/<robot>/env_cfgs.py` — they call the base factory and customize scene entities, sensors, reward params, and terminations.
 
@@ -217,15 +218,15 @@ All manager configs (rewards, observations, actions, commands, terminations, eve
 Custom terms are in `src/tasks/<type>/mdp/` which re-exports from `mjlab.envs.mdp` and adds project-specific:
 - `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py` (velocity)
 - `rewards.py`, `observations.py`, `terminations.py`, `commands.py`, `metrics.py` (tracking)
-- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `events.py`, `velocity_command.py`, `height_command.py`, `upper_body_action.py` (locomanipulation)
+- `rewards.py`, `observations.py`, `terminations.py`, `curriculums.py`, `events.py`, `velocity_command.py`, `height_command.py`, `waist_yaw_command.py`, `upper_body_action.py` (locomanipulation)
 
 ### Locomanipulation Summary
 
-Policy controls 12 lower-body joints only; upper body driven by ACCAD motion data via `UpperBodyMotionAction`. Supports both G1 29-DOF (17 upper-body DOFs) and G1 23-DOF (11 upper-body DOFs). Two modes: pose-only (sample frame at reset, hold) and clip playback (frame-by-frame). `waist_yaw_only=True` zeros out waist_roll/pitch from motion data. `default_pose_ratio` curriculum (`default_pose_ratio_staged`) gradually introduces diverse upper-body poses during training. `fixed_upper_body_pose` (play mode) pins all envs to a specific upper-body joint configuration.
+Policy controls lower-body + waist joints: 15 DOF for G1 29-DOF (12 leg + waist_yaw/roll/pitch) and 13 DOF for G1 23-DOF (12 leg + waist_yaw). Upper body (arms only) driven by ACCAD motion data via `UpperBodyMotionAction` with `exclude_waist=True`. Waist yaw has a dedicated `WaistYawCommand` (±90° range, `yaw_scale` curriculum). Waist roll/pitch are policy-controlled via default pose offset (no dedicated command). Two modes: pose-only (sample frame at reset, hold) and clip playback (frame-by-frame). `default_pose_ratio` curriculum (`default_pose_ratio_staged`) gradually introduces diverse upper-body poses during training. `fixed_upper_body_pose` (play mode) pins all envs to a specific upper-body joint configuration. `fixed_waist_yaw` (play mode) pins the waist yaw command.
 
-**G1-23DOF specifics**: Uses `motion_dof_indices` to remap 29-DOF motion data columns to 23-DOF joint layout. Wrist body names are `wrist_roll_rubber_hand` (not `wrist_yaw_link`). Symmetry uses `G1_23DOFSymmetry` with 23-joint swap/flip mappings. Cleaned motion data (`accad_all_g1_23dof_clean.pkl`) removes frames with self-collisions. Gain presets (`G1_23DOF_GAIN_PRESETS`) support "default", "unitree", "unitree_stiff".
+**G1-23DOF specifics**: Uses `motion_dof_indices` to remap 29-DOF motion data columns to 23-DOF joint layout (10 arm joints, waist excluded). Wrist body names are `wrist_roll_rubber_hand` (not `wrist_yaw_link`). Symmetry uses `G1_23DOFSymmetry` with 23-joint swap/flip mappings and 13-DOF action mirror. Cleaned motion data (`accad_all_g1_23dof_clean.pkl`) removes frames with self-collisions. Gain presets (`G1_23DOF_GAIN_PRESETS`) support "default", "unitree", "unitree_stiff".
 
-**Rewards restricted to lower-body joints** (matching policy control): `pose` (variable_posture), `stand_still`, `joint_acc_l2`, `joint_pos_limits`, `leg_joint_vel_penalty`. Full-body rewards (policy compensates via hips): `body_orientation_l2`, `body_ang_vel`, `angular_momentum`.
+**Rewards restricted to lower-body joints** (matching policy control): `pose` (variable_posture), `stand_still`, `joint_acc_l2`, `joint_pos_limits`, `leg_joint_vel_penalty`. Full-body rewards (policy compensates via hips): `body_orientation_l2`, `body_ang_vel`, `angular_momentum`. Waist yaw tracking: `track_waist_yaw` (Gaussian kernel, standing/walking weight gates, same pattern as `track_base_height`).
 
 **`variable_posture`**: Penalizes deviation from default pose with per-joint std that varies by speed regime: `std_standing` (speed < 0.1), `std_walking` (0.1–1.5), `std_running` (>= 1.5). Hard thresholds — no blending. When `height_postures` is set, the desired posture is looked up from a `{height: {joint: radians}}` table based on the commanded height.
 
@@ -264,14 +265,14 @@ External force curriculum applies forces to end-effectors. Two event classes in 
 
 Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table (7 entries, 0.50m–0.785m) computed via `scripts/compute_height_postures.py` (IK solver + scipy optimization). Curriculum: `height_scale_staged` ramps `height_scale` from 0 to 1. Both `variable_posture` and `stand_still` look up target joint angles from this table.
 
-Symmetric data augmentation doubles mini-batches by mirroring across the sagittal plane. Enabled via `SymmetryPpoAlgorithmCfg.symmetry_cfg=True` (default). Disable with `--agent.algorithm.symmetry_cfg=False`. `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before PPO init to avoid kwarg conflict. Runner also auto-exports `policy.onnx` on save.
+Symmetric data augmentation doubles mini-batches by mirroring across the sagittal plane. Enabled via `SymmetryPpoAlgorithmCfg.symmetry_cfg=True` (default). Disable with `--agent.algorithm.symmetry_cfg=False`. `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before PPO init to avoid kwarg conflict. Runner also auto-exports `policy.onnx` on save. Action mirror covers 15 DOF (29-DOF) / 13 DOF (23-DOF) including waist joints. `waist_yaw_command` observation is negated under sagittal mirror (yaw flips).
 
 **Play-mode config** (`play=True` in `unitree_g1_locomanipulation_flat_env_cfg`):
 - Infinite episode length, disables observation corruption
 - Removes `push_robot` event, clears all curricula
 - Sets `hand_force` to `no_force_ratio=0.0` with `force_scale=1.0` (enables force for validation; `constant_force` can still be set for testing)
 - Adds `randomize_terrain` on reset
-- Sets `fixed_upper_body_pose` (HOME_KEYFRAME), `fixed_command=(0,0,0)`, `fixed_height=0.785`
+- Sets `fixed_upper_body_pose` (HOME_KEYFRAME, arms only — waist excluded), `fixed_command=(0,0,0)`, `fixed_height=0.785`, `fixed_waist_yaw=0.0`
 - Flat variant: narrows command ranges, removes terrain_scan/height_scan
 - `--no_terminations` flag disables all termination conditions (useful for viewing motions with dummy agents)
 
@@ -281,8 +282,9 @@ Symmetric data augmentation doubles mini-batches by mirroring across the sagitta
 - `body_frame` (event params): when `True`, `constant_force` is defined in the robot's body frame and rotated to world frame using root orientation. Useful for testing inward/outward forces that stay body-relative regardless of robot heading.
 - `fixed_command` (command cfg): pin velocity command
 - `fixed_height` (command cfg): pin commanded height
+- `fixed_waist_yaw` (command cfg): pin waist yaw command angle (radians)
 
-**Keyboard controls** (native viewer, locomanipulation): `KeyboardCommandOverride` in `play.py` provides numpad 8/2=vel_x, 4/6=vel_y, 7/9=yaw, +/-=height, 5=zero vel (with exponential decay), 0=reset height. Velocity adjustments are instant; zeroing uses decay toward zero (~1s time constant at 50Hz). Monkey-patches `compute()` on twist and base_height command terms.
+**Keyboard controls** (native viewer, locomanipulation): `KeyboardCommandOverride` in `play.py` provides numpad 8/2=vel_x, 4/6=vel_y, 7/9=yaw, +/-=height, 1/3=waist_yaw, 5=zero vel (with exponential decay), 0=reset height+waist_yaw. Velocity adjustments are instant; zeroing uses decay toward zero (~1s time constant at 50Hz). Monkey-patches `compute()` on twist, base_height, and waist_yaw command terms.
 
 ### Play Mode Config Restoration
 

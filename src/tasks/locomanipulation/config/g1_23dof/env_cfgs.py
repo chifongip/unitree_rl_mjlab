@@ -25,7 +25,7 @@ from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipul
 # left_shoulder_yaw(17), left_elbow(18), left_wrist_roll(19),
 # right_shoulder_pitch(22), right_shoulder_roll(23), right_shoulder_yaw(24),
 # right_elbow(25), right_wrist_roll(26).
-MOTION_DOF_INDICES_23DOF = (12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26)
+MOTION_DOF_INDICES_23DOF = (15, 16, 17, 18, 19, 22, 23, 24, 25, 26)
 
 
 def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -49,6 +49,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     "right_knee_joint",
     "right_ankle_pitch_joint",
     "right_ankle_roll_joint",
+    "waist_yaw_joint",
   )
 
   robot_cfg, action_scale = get_g1_23dof_robot_cfg(preset="unitree_stiff")
@@ -110,6 +111,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     r".*_knee_joint",
     r".*_ankle_pitch_joint",
     r".*_ankle_roll_joint",
+    r"waist_yaw_joint",
   )
 
   # Upper-body motion playback from ACCAD dataset.
@@ -121,6 +123,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     motion_dof_indices=MOTION_DOF_INDICES_23DOF,
     default_pose_ratio=1.0,
     waist_yaw_only=True,
+    exclude_waist=True,
     pose_only=True,
   )
 
@@ -220,6 +223,21 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     },
   )
   cfg.commands["base_height"].nominal_height_ratio = 0.05
+
+  cfg.curriculum["waist_yaw_scale"] = CurriculumTermCfg(
+    func=mdp.waist_yaw_scale_staged,
+    params={
+      "command_name": "waist_yaw",
+      "stages": [
+        {"step": 0, "scale": 0.0},
+        {"step": 2000 * 24, "scale": 0.2},
+        {"step": 4500 * 24, "scale": 0.4},
+        {"step": 7500 * 24, "scale": 0.6},
+        {"step": 11000 * 24, "scale": 0.8},
+        {"step": 15000 * 24, "scale": 1.0},
+      ],
+    },
+  )
 
   # Tighten angular velocity tracking reward for low-speed rotation.
   cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.5)
@@ -400,9 +418,8 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       params={},
     )
 
-    # 23-DOF upper-body joints (11 total).
+    # 23-DOF upper-body joints (10 total, waist_yaw excluded).
     cfg.actions["upper_body_motion"].fixed_upper_body_pose = {
-      "waist_yaw_joint": 0.0,
       "left_shoulder_pitch_joint": 0.0,
       "left_shoulder_roll_joint": 0.0,
       "left_shoulder_yaw_joint": 0.0,
@@ -424,6 +441,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
     cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
     cfg.commands["base_height"].fixed_height = 0.785
+    cfg.commands["waist_yaw"].fixed_waist_yaw = 0.0
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
