@@ -245,15 +245,17 @@ Policy controls 12 lower-body joints only; upper body driven by ACCAD motion dat
 
 **`foot_swing_height`** (class-based): Tracks peak foot height during each swing phase and penalizes deviation from `target_height` at landing (`first_contact`). Unlike `feet_clearance` (velocity-weighted, negligible at low speeds), this provides a speed-independent signal that fires at every landing. Stateful — maintains `peak_heights` tensor, cleared via `reset()` at episode boundaries. Monitor `Metrics/peak_height_mean` during training.
 
-External force curriculum (`TriangleWaveForceEvent`) applies forces to end-effectors with mode-dependent behavior. Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`). Per-body Dirichlet axis scaling for force diversity. Config in `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]`.
+External force curriculum applies forces to end-effectors. Two event classes in `src/tasks/locomanipulation/mdp/events.py`: `TriangleWaveForceEvent` (default, continuous) and `HandForceEvent` (impulse lifecycle). Force bounds computed via Jacobian transpose (`MaxForceEstimator`). Two curriculum options: step-based (`force_scale_staged`) and adaptive (`force_curriculum_adaptive`). Per-env Dirichlet axis scaling for force diversity. Config in `cfg.events["hand_force"]` and `cfg.curriculum["force_curriculum"]`.
 
-**`TriangleWaveForceEvent`**: Replaces the old `HandForceEvent` impulse lifecycle with smoother, continuous disturbance. Three operating modes per environment:
+**`HandForceEvent`**: Impulse lifecycle — forces apply for a sampled `duration_s`, then a `cooldown_s` gap before the next impulse. A fraction of envs (`no_force_ratio`, default 5%) receive no force. Per-env Dirichlet axis scaling (`_force_xyz_scale` shape `(N, 3)`). No standing/walking mode distinction — forces apply uniformly. `_no_force_mask` (per-episode, resampled at reset) used by `stand_still` and `leg_joint_vel_penalty` rewards for force-aware std relaxation. Supports `zero_force_prob` (per-axis probability of zeroing a force component).
+
+**`TriangleWaveForceEvent`**: Continuous disturbance with mode-dependent behavior. Three operating modes per environment:
 
 - **Standing** (`|v_cmd| < 0.1`): Force oscillates via triangle wave between `f_min` and `f_max`. Phase updates every step: `phase = |remainder(ts, 2) - 1|`, producing a 0→1→0→1 cycle. Half-cycle duration configurable via `duration_s` (default 3-5s). Force: `f = f_min + (f_max - f_min) * phase`.
 - **Walking** (`|v_cmd| >= 0.1`): Phase continues advancing. XY force projected to oppose walking direction (drag). `no_projection_ratio` (default 0.2) controls the fraction of walking envs that skip projection and keep full force direction (inward/outward/lateral). Simulates diverse carrying scenarios.
 - **No-force** (per-episode mask): ~5% of envs get zero force, preserving baseline skills.
 
-**Per-body independent state**: Each end-effector body gets its own independent phase, duration, and Dirichlet scaling. State tensors (resampled at reset): `_force_phase_ts` `(N, B, 1)`, `_force_phase` `(N, B, 1)`, `_force_duration` `(N, B, 1)`, `_force_xyz_scale` `(N, B, 3)`, `_no_force_mask` `(N,)`, `_no_projection_mask` `(N,)`.
+**Per-body independent state** (`TriangleWaveForceEvent`): Each end-effector body gets its own independent phase, duration, and Dirichlet scaling. State tensors (resampled at reset): `_force_phase_ts` `(N, B, 1)`, `_force_phase` `(N, B, 1)`, `_force_duration` `(N, B, 1)`, `_force_xyz_scale` `(N, B, 3)`, `_no_force_mask` `(N,)`, `_no_projection_mask` `(N,)`. `HandForceEvent` state is simpler: `_time_remaining` `(N,)`, `_interval_time_left` `(N,)`, `_active` `(N,)`, `_force_xyz_scale` `(N, 3)`, `_no_force_mask` `(N,)`.
 
 **`constant_force` mode**: Bypasses all logic (fixed force every step, for testing). Supports two formats:
 - Uniform: `{"x": 0.0, "y": 0.0, "z": -30.0}` — same force on all bodies.
