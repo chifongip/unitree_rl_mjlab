@@ -223,6 +223,12 @@ class HandForceEvent:
       self._num_envs, device=self._device, dtype=torch.bool
     )
 
+    # No-force mask (per-episode, resampled at reset).
+    self._no_force_ratio = cfg.params.get("no_force_ratio", 0.0)
+    self._no_force_mask = (
+      torch.rand(self._num_envs, device=self._device) < self._no_force_ratio
+    )
+
   def __call__(
     self,
     env: ManagerBasedRlEnv,
@@ -278,10 +284,6 @@ class HandForceEvent:
           ee_force_maxes[ee_idx][:, axis] = ee_force_maxes[ee_idx][:, axis].clamp(
             hard_lo, hard_hi
           ) * effective_scale
-      # Per-env Dirichlet axis scaling for training diversity.
-      for ee_idx in range(len(ee_force_mins)):
-        ee_force_mins[ee_idx] *= self._force_xyz_scale
-        ee_force_maxes[ee_idx] *= self._force_xyz_scale
       use_per_ee_bounds = True
     else:
       # Static bounds from config.
@@ -316,30 +318,23 @@ class HandForceEvent:
     self._interval_time_left -= dt
 
     # Trigger new impulses for eligible envs.
-    eligible = (~self._active) & (self._interval_time_left <= 0)
+    eligible = (~self._active) & (self._interval_time_left <= 0) & ~self._no_force_mask
     if not eligible.any():
       return
 
     trigger_ids = eligible.nonzero(as_tuple=False).squeeze(-1)
     n = len(trigger_ids)
 
-    # Apply no_force_ratio: skip a fraction of envs.
-    if no_force_ratio > 0:
-      mask = torch.rand(n, device=self._device) >= no_force_ratio
-      trigger_ids = trigger_ids[mask]
-      n = len(trigger_ids)
-      if n == 0:
-        return
-
     size = (n, self._num_bodies, 3)
 
-    # Sample per-axis forces.
+    # Sample per-axis forces with per-env Dirichlet axis scaling.
     forces = torch.zeros(size, device=self._device)
+    xyz_scale = self._force_xyz_scale[trigger_ids]  # (n, 3)
     if use_per_ee_bounds:
       # Per-EE force sampling using Jacobian-derived bounds.
       for ee_idx in range(self._num_bodies):
-        f_min = ee_force_mins[ee_idx][trigger_ids]  # (n, 3)
-        f_max = ee_force_maxes[ee_idx][trigger_ids]  # (n, 3)
+        f_min = ee_force_mins[ee_idx][trigger_ids] * xyz_scale  # (n, 3)
+        f_max = ee_force_maxes[ee_idx][trigger_ids] * xyz_scale  # (n, 3)
         u = torch.rand(n, 3, device=self._device)
         forces[:, ee_idx, :] = f_min + (f_max - f_min) * u
     else:
@@ -347,7 +342,7 @@ class HandForceEvent:
         lo, hi = force_range.get(key, (0.0, 0.0))
         forces[:, :, axis] = torch.empty(
           n, self._num_bodies, device=self._device
-        ).uniform_(lo, hi)
+        ).uniform_(lo, hi) * xyz_scale[:, axis]
 
     # Zero individual axes based on zero_force_prob.
     if zero_force_prob is not None:
@@ -414,6 +409,12 @@ class HandForceEvent:
     self._time_remaining[env_ids] = 0.0
     self._interval_time_left[env_ids] = 0.0
     self._active[env_ids] = False
+
+    # Resample per-env no-force mask.
+    n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
+    self._no_force_mask[env_ids] = (
+      torch.rand(n, device=self._device) < self._no_force_ratio
+    )
 
     # Resample per-env Dirichlet axis scaling.
     n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
