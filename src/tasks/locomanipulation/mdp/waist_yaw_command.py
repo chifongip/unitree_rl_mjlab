@@ -44,6 +44,8 @@ class WaistYawCommand(CommandTerm):
         hi = self.cfg.ranges[1] * self.cfg.yaw_scale
         r = torch.empty(len(env_ids), device=self.device)
         self._waist_yaw_command[env_ids, 0] = r.uniform_(lo, hi)
+        nominal_mask = r.uniform_(0.0, 1.0) < self.cfg.nominal_yaw_ratio
+        self._waist_yaw_command[env_ids[nominal_mask], 0] = 0.0
 
     def _update_command(self) -> None:
         pass
@@ -58,6 +60,8 @@ class WaistYawCommandCfg(CommandTermCfg):
     """If set, always command this yaw instead of random sampling."""
     yaw_scale: float = 0.0
     """Curriculum scale in [0, 1]. 0 = zero yaw only, 1 = full range."""
+    nominal_yaw_ratio: float = 0.0
+    """Probability of pinning a resampled env to yaw=0 (nominal forward-facing)."""
 
     def build(self, env: ManagerBasedRlEnv) -> WaistYawCommand:
         return WaistYawCommand(self, env)

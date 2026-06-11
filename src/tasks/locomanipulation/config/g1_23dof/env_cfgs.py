@@ -238,6 +238,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       ],
     },
   )
+  cfg.commands["waist_yaw"].nominal_yaw_ratio = 0.05
 
   # Tighten angular velocity tracking reward for low-speed rotation.
   cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.5)
