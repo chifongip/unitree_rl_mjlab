@@ -389,6 +389,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_swing_height"].params["asset_cfg"].site_names = site_names
+  cfg.rewards["feet_distance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_swing_height"].weight = 0.0
   cfg.rewards["self_collisions"] = RewardTermCfg(
     func=mdp.self_collision_cost,

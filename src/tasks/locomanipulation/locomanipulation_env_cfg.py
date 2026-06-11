@@ -434,6 +434,14 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "command_threshold": 0.1,
       },
     ),
+    "feet_distance": RewardTermCfg(
+      func=mdp.feet_distance,
+      weight=-0.5,
+      params={
+        "asset_cfg": SceneEntityCfg("robot", site_names=()),  # Set per-robot.
+        "min_distance": 0.15,
+      },
+    ),
     "stand_still": RewardTermCfg(
       func=mdp.stand_still,
       weight=-1.0,

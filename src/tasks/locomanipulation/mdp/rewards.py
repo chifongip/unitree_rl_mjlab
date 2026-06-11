@@ -483,6 +483,20 @@ def soft_landing(
   return cost
 
 
+def feet_distance(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  min_distance: float = 0.15,
+) -> torch.Tensor:
+  """Penalize feet being too close together in XY plane."""
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_pos_xy = asset.data.site_pos_w[:, asset_cfg.site_ids, :2]  # [B, 2, 2]
+  foot_dist = torch.norm(foot_pos_xy[:, 0] - foot_pos_xy[:, 1], dim=-1)  # [B]
+  cost = torch.clamp(min_distance - foot_dist, min=0.0) / min_distance
+  env.extras["log"]["Metrics/feet_distance_mean"] = foot_dist.mean()
+  return cost
+
+
 class variable_posture:
   """Penalize deviation from default pose with speed-dependent tolerance.
 
