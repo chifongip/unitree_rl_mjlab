@@ -2,6 +2,7 @@
 
 import math
 import re
+from pathlib import Path
 
 from src.assets.robots import get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -247,6 +248,12 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   # not penalized as standing still.
   cfg.rewards["stand_still"].params["command_threshold"] = 0.1
 
+  # Height command and reward settings.
+  cfg.commands["base_height"].nominal_height = 0.76
+  cfg.commands["base_height"].max_deviation_down = 0.26
+  cfg.commands["base_height"].max_deviation_up = 0.04
+  cfg.rewards["pose"].params["nominal_height"] = 0.76
+
   # Rationale for std values:
   # - Knees/hip_pitch get the loosest std to allow natural leg bending during stride.
   # - Hip roll/yaw stay tighter to prevent excessive lateral sway and keep gait stable.
@@ -270,7 +277,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   cfg.rewards["pose"].params["std_standing"] = {
     r".*hip_pitch.*": 0.05,
     r".*hip_roll.*": 0.05,
-    r".*hip_yaw.*": 0.08,
+    r".*hip_yaw.*": 0.05,
     r".*knee.*": 0.05,
     r".*ankle_pitch.*": 0.05,
     r".*ankle_roll.*": 0.05,
@@ -291,50 +298,12 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
   }
-  height_postures = {
-    0.5: {
-      "left_hip_pitch_joint": -1.055, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 1.949, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -1.055, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 1.949, "right_ankle_pitch_joint": -0.8727, "right_ankle_roll_joint": 0.0,
-    },
-    0.55: {
-      "left_hip_pitch_joint": -0.8771, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 1.7667, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -0.8771, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 1.7667, "right_ankle_pitch_joint": -0.8727, "right_ankle_roll_joint": 0.0,
-    },
-    0.6: {
-      "left_hip_pitch_joint": -0.6721, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 1.5523, "left_ankle_pitch_joint": -0.8727, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -0.6721, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 1.5523, "right_ankle_pitch_joint": -0.8727, "right_ankle_roll_joint": 0.0,
-    },
-    0.65: {
-      "left_hip_pitch_joint": -0.509, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 1.3006, "left_ankle_pitch_joint": -0.7916, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -0.509, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 1.3006, "right_ankle_pitch_joint": -0.7916, "right_ankle_roll_joint": 0.0,
-    },
-    0.7: {
-      "left_hip_pitch_joint": -0.3858, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 1.0131, "left_ankle_pitch_joint": -0.6273, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -0.3858, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 1.0131, "right_ankle_pitch_joint": -0.6273, "right_ankle_roll_joint": 0.0,
-    },
-    0.75: {
-      "left_hip_pitch_joint": -0.2081, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 0.6159, "left_ankle_pitch_joint": -0.4078, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -0.2081, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 0.6159, "right_ankle_pitch_joint": -0.4078, "right_ankle_roll_joint": 0.0,
-    },
-    0.785: {
-      "left_hip_pitch_joint": -0.1, "left_hip_roll_joint": 0.0, "left_hip_yaw_joint": 0.0,
-      "left_knee_joint": 0.3, "left_ankle_pitch_joint": -0.2, "left_ankle_roll_joint": 0.0,
-      "right_hip_pitch_joint": -0.1, "right_hip_roll_joint": 0.0, "right_hip_yaw_joint": 0.0,
-      "right_knee_joint": 0.3, "right_ankle_pitch_joint": -0.2, "right_ankle_roll_joint": 0.0,
-    },
-  }
+
+  import importlib.util as _ilu
+  _postures_path = str(Path(__file__).resolve().parents[5] / "scripts" / "postures.py")
+  _spec = _ilu.spec_from_file_location("postures", _postures_path)
+  _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+  height_postures = _mod.HEIGHT_POSTURES
   cfg.rewards["pose"].params["height_postures"] = height_postures
 
   # Restrict stand_still, joint_acc_l2, joint_pos_limits and leg_joint_vel_penalty to

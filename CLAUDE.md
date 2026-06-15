@@ -140,9 +140,11 @@ Exports a trained checkpoint to `policy.onnx` with metadata (joint names, PD gai
 
 ### Compute Height Postures (Locomanipulation)
 ```bash
-python scripts/compute_height_postures.py
+python scripts/compute_height_postures.py          # compute + print dict
+python scripts/compute_height_postures.py --show   # also open MuJoCo viewer
+python scripts/compute_height_postures.py --postures-file scripts/postures.py  # load + replay
 ```
-Computes IK-based joint postures for G1 at different standing heights (0.50m–0.785m). Used by `variable_posture` and `stand_still` rewards to look up target joint angles from commanded height.
+Computes IK-based joint postures for G1 at different standing heights (0.50m–0.80m). Used by `variable_posture` and `stand_still` rewards to look up target joint angles from commanded height. `--postures-file` loads an existing `HEIGHT_POSTURES` dict from a Python file and replays it in the MuJoCo viewer without recomputing. The canonical postures file is `scripts/postures.py` (16 heights at 0.02m intervals), imported directly by both `env_cfgs.py` files.
 
 ### Convert motion CSV to NPZ
 ```bash
@@ -265,7 +267,7 @@ External force curriculum applies forces to end-effectors. Two event classes in 
 - Per-body: `{"left_wrist_yaw_link": {"x": 5.0, "y": -5.0, "z": -20.0}, ...}` — per-hand forces. Unlisted bodies default to zero.
 - `body_frame` param: when `True`, forces are defined in the robot's body frame and rotated to world frame using the root body orientation.
 
-Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table (7 entries, 0.50m–0.785m) computed via `scripts/compute_height_postures.py` (IK solver + scipy optimization). Curriculum: `height_scale_staged` ramps `height_scale` from 0 to 1. `nominal_height_ratio` pins a fraction of envs to the nominal height even when `height_scale > 0`, preventing catastrophic forgetting of comfortable height. Both `variable_posture` and `stand_still` look up target joint angles from this table.
+Base height command (`BaseHeightCommand`) controls absolute z-height with a height-dependent posture table (16 entries, 0.50m–0.80m at 0.02m intervals) imported from `scripts/postures.py`. Sampling range: `[nominal_height - max_deviation_down * height_scale, nominal_height + max_deviation_up * height_scale]`. G1 configs: `nominal_height=0.76`, `max_deviation_down=0.26`, `max_deviation_up=0.04` → full range [0.5, 0.8] at `height_scale=1`. Curriculum: `height_scale_staged` ramps `height_scale` from 0 to 1. `nominal_height_ratio` pins a fraction of envs to nominal height even when `height_scale > 0`. Both `variable_posture` and `stand_still` look up target joint angles from this table via nearest-neighbor.
 
 Symmetric data augmentation doubles mini-batches by mirroring across the sagittal plane. Enabled via `SymmetryPpoAlgorithmCfg.symmetry_cfg=True` (default). Disable with `--agent.algorithm.symmetry_cfg=False`. `LocomanipulationOnPolicyRunner.__init__` pops `symmetry_cfg` before PPO init to avoid kwarg conflict. Runner also auto-exports `policy.onnx` on save. Action mirror covers 15 DOF (29-DOF) / 13 DOF (23-DOF) including waist joints. `waist_yaw_command` observation is negated under sagittal mirror (yaw flips).
 

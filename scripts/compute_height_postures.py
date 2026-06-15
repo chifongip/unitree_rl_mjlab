@@ -7,6 +7,7 @@ that place the G1 pelvis at a target height with both feet on the ground
 Usage:
     python scripts/compute_height_postures.py          # compute + print dict
     python scripts/compute_height_postures.py --show   # also open MuJoCo viewer
+    python scripts/compute_height_postures.py --postures-file postures.py   # load + replay in viewer
 
 Output: a Python dict that can be pasted into config/g1/env_cfgs.py
 as the height_postures parameter for the variable_posture reward.
@@ -320,6 +321,20 @@ def main():
     return model, data, results, qpos_ids
 
 
+def load_postures(path):
+    """Load a HEIGHT_POSTURES dict from a Python file."""
+    text = Path(path).read_text()
+    ns = {}
+    exec(text, ns)
+    if "HEIGHT_POSTURES" in ns:
+        return ns["HEIGHT_POSTURES"]
+    # Fallback: grab the first dict value.
+    for v in ns.values():
+        if isinstance(v, dict):
+            return v
+    raise ValueError(f"No dict found in {path}")
+
+
 def show_in_viewer(model, data, results, qpos_ids):
     """Open MuJoCo viewer and cycle through each height posture."""
     heights = sorted(results.keys())
@@ -351,9 +366,16 @@ def show_in_viewer(model, data, results, qpos_ids):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show", action="store_true", help="Open MuJoCo viewer to inspect postures")
+    parser.add_argument("--postures-file", type=str, help="Load existing HEIGHT_POSTURES dict from a Python file instead of computing")
     args = parser.parse_args()
 
-    model, data, results, qpos_ids = main()
-
-    if args.show:
+    if args.postures_file:
+        results = load_postures(args.postures_file)
+        model, data = load_g1_model()
+        _, qpos_ids, _, _ = get_joint_info(model)
+        print(f"Loaded {len(results)} height postures from {args.postures_file}")
         show_in_viewer(model, data, results, qpos_ids)
+    else:
+        model, data, results, qpos_ids = main()
+        if args.show:
+            show_in_viewer(model, data, results, qpos_ids)
