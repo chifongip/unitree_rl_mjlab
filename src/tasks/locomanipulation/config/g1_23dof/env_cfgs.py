@@ -257,7 +257,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   # Height command and reward settings.
   cfg.commands["base_height"].nominal_height = 0.76
   cfg.commands["base_height"].max_deviation_down = 0.26
-  cfg.commands["base_height"].max_deviation_up = 0.04
+  cfg.commands["base_height"].max_deviation_up = 0.02
   cfg.rewards["pose"].params["nominal_height"] = 0.76
 
   # Restrict pose reward to lower-body joints only.
@@ -376,7 +376,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     cfg.events["hand_force"].params["no_force_ratio"] = 0.0
     cfg.events["hand_force"].params["force_scale"] = 1.0
     cfg.events["hand_force"].params["force_range_max"] = {
-        "x": (-40.0, 40.0), "y": (-40.0, 40.0), "z": (-50.0, 5.0),
+        "x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-40.0, 0.0),
     }
     cfg.events["randomize_terrain"] = EventTermCfg(
       func=envs_mdp.randomize_terrain,
@@ -404,9 +404,9 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     # }
     # cfg.events["hand_force"].params["body_frame"] = True
     # Uniform force (same on both hands):
-    # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": -30.0}
+    # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": 0.0}
     cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
-    cfg.commands["base_height"].fixed_height = 0.785
+    cfg.commands["base_height"].fixed_height = 0.76
     cfg.commands["waist_yaw"].fixed_waist_yaw = 0.0
 
     if cfg.scene.terrain is not None:

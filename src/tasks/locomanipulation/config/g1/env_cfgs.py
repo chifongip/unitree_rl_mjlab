@@ -251,7 +251,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   # Height command and reward settings.
   cfg.commands["base_height"].nominal_height = 0.76
   cfg.commands["base_height"].max_deviation_down = 0.26
-  cfg.commands["base_height"].max_deviation_up = 0.04
+  cfg.commands["base_height"].max_deviation_up = 0.02
   cfg.rewards["pose"].params["nominal_height"] = 0.76
 
   # Rationale for std values:

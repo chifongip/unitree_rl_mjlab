@@ -5,12 +5,13 @@ that place the G1 pelvis at a target height with both feet on the ground
 (z=0) and the torso upright.
 
 Usage:
-    python scripts/compute_height_postures.py          # compute + print dict
-    python scripts/compute_height_postures.py --show   # also open MuJoCo viewer
-    python scripts/compute_height_postures.py --postures-file postures.py   # load + replay in viewer
+    python scripts/compute_height_postures.py                          # compute + print dict
+    python scripts/compute_height_postures.py --save scripts/postures.py   # compute + save to file
+    python scripts/compute_height_postures.py --show                   # also open MuJoCo viewer
+    python scripts/compute_height_postures.py --postures-file scripts/postures.py   # load + replay in viewer
 
-Output: a Python dict that can be pasted into config/g1/env_cfgs.py
-as the height_postures parameter for the variable_posture reward.
+Output: a Python dict that can be saved to scripts/postures.py and imported
+by env_cfgs.py as the height_postures parameter for the variable_posture reward.
 """
 
 import argparse
@@ -43,12 +44,15 @@ LOWER_BODY_JOINTS = [
 ]
 
 # Target heights (absolute world-frame z, meters).
-TARGET_HEIGHTS = [round(h, 2) for h in np.arange(0.50, 0.79, 0.05)]
+TARGET_HEIGHTS = [round(h, 2) for h in np.arange(0.50, 0.79, 0.02)]
 # Include nominal height explicitly.
-NOMINAL_HEIGHT = 0.785
+NOMINAL_HEIGHT = 0.76
 if NOMINAL_HEIGHT not in TARGET_HEIGHTS:
     TARGET_HEIGHTS.append(NOMINAL_HEIGHT)
     TARGET_HEIGHTS.sort()
+
+# XY offset from foot centroid for pelvis alignment target (meters).
+ALIGN_OFFSET = np.array([-0.05, 0.0])
 
 
 def load_g1_model():
@@ -133,6 +137,14 @@ def compute_foot_world_xy(data, body_id, local_points):
     return world_pts[:, :2]
 
 
+def compute_foot_centroid(data, left_body, right_body, left_local, right_local):
+    """Compute world-frame XY centroid of all foot capsule endpoints."""
+    left_xy = compute_foot_world_xy(data, left_body, left_local)
+    right_xy = compute_foot_world_xy(data, right_body, right_local)
+    all_xy = np.concatenate([left_xy, right_xy], axis=0)
+    return np.mean(all_xy, axis=0)  # [2]
+
+
 def get_pelvis_body_id(model):
     """Get body ID for pelvis."""
     return mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
@@ -150,6 +162,7 @@ def compute_posture_for_height(
     right_ankle_body,
     pelvis_body_id,
     q_init,
+    align_offset,
 ):
     """Find lower-body joint angles that place pelvis at target_z with feet on ground."""
     left_local = foot_geoms["left"]   # [14, 3]
@@ -184,7 +197,7 @@ def compute_posture_for_height(
         all_xy = np.concatenate([left_xy, right_xy], axis=0)  # [28, 2]
         foot_centroid = np.mean(all_xy, axis=0)  # [2]
         pelvis_xy = data.xpos[pelvis_body_id, :2]
-        align_error = np.sum((pelvis_xy - foot_centroid) ** 2)
+        align_error = np.sum((pelvis_xy - (foot_centroid + align_offset)) ** 2)
 
         # Regularization: stay close to initial guess.
         reg = 0.01 * np.sum((q - q_init) ** 2)
@@ -258,6 +271,7 @@ def main():
                 foot_geoms, left_ankle_body, right_ankle_body,
                 pelvis_body_id,
                 q_init_try,
+                ALIGN_OFFSET,
             )
             candidates.append((q_try, cost_try))
         # Random restarts to escape local minima.
@@ -270,6 +284,7 @@ def main():
                 foot_geoms, left_ankle_body, right_ankle_body,
                 pelvis_body_id,
                 q_rand,
+                ALIGN_OFFSET,
             )
             candidates.append((q_try, cost_try))
         # Pick the best.
@@ -305,20 +320,25 @@ def main():
 
         q_prev = q_opt.copy()
 
-    # Print the dict in a format ready to paste into env_cfgs.py.
-    print("=" * 60)
-    print("Copy the following into config/g1/env_cfgs.py:")
-    print("=" * 60)
-    print()
-    print("HEIGHT_POSTURES = {")
-    for h, posture in results.items():
-        print(f"    {h}: {{")
-        for name, val in posture.items():
-            print(f'        "{name}": {val},')
-        print("    },")
-    print("}")
-
     return model, data, results, qpos_ids
+
+
+def format_postures(results):
+    """Format HEIGHT_POSTURES dict as a Python source string."""
+    lines = [
+        '"""Computed height postures from generate_height_poses.py."""',
+        "",
+        "",
+        "HEIGHT_POSTURES = {",
+    ]
+    for h, posture in results.items():
+        lines.append(f"    {h}: {{")
+        for name, val in posture.items():
+            lines.append(f'        "{name}": {val},')
+        lines.append("    },")
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def load_postures(path):
@@ -335,11 +355,15 @@ def load_postures(path):
     raise ValueError(f"No dict found in {path}")
 
 
-def show_in_viewer(model, data, results, qpos_ids):
+def show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, align_offset):
     """Open MuJoCo viewer and cycle through each height posture."""
     heights = sorted(results.keys())
     print(f"\nViewer: cycling through {len(heights)} heights. Press Ctrl+C to quit.")
     print("  Each height is shown for 3 seconds.\n")
+
+    mat = np.eye(3).flatten()
+    red = np.array([1.0, 0.0, 0.0, 0.8], dtype=np.float32)
+    blue = np.array([0.0, 0.0, 1.0, 0.8], dtype=np.float32)
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         try:
@@ -356,9 +380,34 @@ def show_in_viewer(model, data, results, qpos_ids):
                     data.qpos[5] = 0.0
                     data.qpos[6] = 0.0
                     mujoco.mj_forward(model, data)
+
+                    # Compute foot centroid.
+                    centroid_xy = compute_foot_centroid(
+                        data, left_ankle_body, right_ankle_body,
+                        foot_geoms["left"], foot_geoms["right"],
+                    )
+                    # Red sphere: foot centroid on the ground plane.
+                    centroid_pos = np.array([centroid_xy[0], centroid_xy[1], 0.0])
+                    mujoco.mjv_initGeom(
+                        viewer.user_scn.geoms[0],
+                        mujoco.mjtGeom.mjGEOM_SPHERE,
+                        np.array([0.02, 0.0, 0.0]),
+                        centroid_pos, mat, red,
+                    )
+                    # Blue sphere: alignment target (centroid + offset).
+                    target_xy = centroid_xy + align_offset
+                    target_pos = np.array([target_xy[0], target_xy[1], 0.0])
+                    mujoco.mjv_initGeom(
+                        viewer.user_scn.geoms[1],
+                        mujoco.mjtGeom.mjGEOM_SPHERE,
+                        np.array([0.02, 0.0, 0.0]),
+                        target_pos, mat, blue,
+                    )
+                    viewer.user_scn.ngeom = 2
+
                     viewer.sync()
-                    print(f"  Showing height = {h:.3f}m")
-                    time.sleep(3.0)
+                    print(f"  Height = {h:.3f}m  centroid = [{centroid_xy[0]:.3f}, {centroid_xy[1]:.3f}]  target = [{target_xy[0]:.3f}, {target_xy[1]:.3f}]")
+                    time.sleep(1.0)
         except KeyboardInterrupt:
             print("\nViewer closed.")
 
@@ -367,15 +416,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show", action="store_true", help="Open MuJoCo viewer to inspect postures")
     parser.add_argument("--postures-file", type=str, help="Load existing HEIGHT_POSTURES dict from a Python file instead of computing")
+    parser.add_argument("--save", type=str, help="Save HEIGHT_POSTURES dict to a Python file")
     args = parser.parse_args()
 
     if args.postures_file:
         results = load_postures(args.postures_file)
         model, data = load_g1_model()
         _, qpos_ids, _, _ = get_joint_info(model)
+        foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(model)
         print(f"Loaded {len(results)} height postures from {args.postures_file}")
-        show_in_viewer(model, data, results, qpos_ids)
+        show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, ALIGN_OFFSET)
     else:
         model, data, results, qpos_ids = main()
+        text = format_postures(results)
+        if args.save:
+            Path(args.save).write_text(text)
+            print(f"Saved to {args.save}")
+        else:
+            print(text)
         if args.show:
-            show_in_viewer(model, data, results, qpos_ids)
+            foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(model)
+            show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, ALIGN_OFFSET)
