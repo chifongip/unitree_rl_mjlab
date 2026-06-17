@@ -22,6 +22,51 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 
+# Predefined upper body poses for keyboard switching (F8-F11).
+# Each dict maps joint names to radians. Empty dict = model defaults.
+PREDEFINED_POSES: list[dict[str, float]] = [
+  {
+    # F1: default pose
+    "left_shoulder_pitch_joint": 0.0,
+    "left_shoulder_roll_joint": 0.0,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": 0.0,
+    "left_wrist_roll_joint": 0.0,
+    "right_shoulder_pitch_joint": 0.0,
+    "right_shoulder_roll_joint": 0.0,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": 0.0,
+    "right_wrist_roll_joint": 0.0,
+  },
+  {
+    # F2: relaxed down
+    "left_shoulder_pitch_joint": 0.35,
+    "left_shoulder_roll_joint": 0.2,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": 0.87,
+    "left_wrist_roll_joint": 0.18,
+    "right_shoulder_pitch_joint": 0.35,
+    "right_shoulder_roll_joint": -0.2,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": 0.87,
+    "right_wrist_roll_joint": -0.18,
+  },
+  {
+    # F3: T-pose
+    "left_shoulder_pitch_joint": 0.0,
+    "left_shoulder_roll_joint": 1.57,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": 1.57,
+    "left_wrist_roll_joint": 0.0,
+    "right_shoulder_pitch_joint": 0.0,
+    "right_shoulder_roll_joint": -1.57,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": 1.57,
+    "right_wrist_roll_joint": 0.0,
+  },
+]
+
+
 class KeyboardCommandOverride:
     """Keyboard-driven command overrides for the native viewer.
 
@@ -48,6 +93,9 @@ class KeyboardCommandOverride:
         self.target_waist_yaw: float = 0.0
         self.waist_yaw_active: bool = False
 
+        self.target_upper_body_pose_idx: int = 0
+        self.upper_body_pose_active: bool = False
+
         self.decay: float = decay
 
         self.vel_step: float = 0.1
@@ -66,6 +114,10 @@ class KeyboardCommandOverride:
         self._last_key_time = now
 
         from mjlab.viewer.native.keys import (
+            KEY_F8,
+            KEY_F9,
+            KEY_F10,
+            KEY_F11,
             KEY_KP_0,
             KEY_KP_1,
             KEY_KP_2,
@@ -108,6 +160,16 @@ class KeyboardCommandOverride:
         elif key == KEY_KP_0:
             self.target_height = self.nominal_height
             self.target_waist_yaw = 0.0
+        elif key in (KEY_F8, KEY_F9, KEY_F10, KEY_F11):
+            self.target_upper_body_pose_idx = key - KEY_F8
+            self.upper_body_pose_active = True
+            pose_label = f"F{self.target_upper_body_pose_idx + 8}"
+            print(
+                f"\r[KB] pose={pose_label}  ",
+                end="",
+                flush=True,
+            )
+            return
         else:
             handled = False
 
@@ -169,6 +231,22 @@ def _patch_command_compute(term, override: KeyboardCommandOverride, term_type: s
                 term._waist_yaw_command[:, 0] = override.target_waist_yaw
 
         term.compute = patched_compute
+
+
+def _patch_upper_body_pose(action_term, override: KeyboardCommandOverride, poses: list):
+    """Monkey-patch apply_actions() to swap upper body pose on key press."""
+    original_apply = action_term.apply_actions
+    last_idx = [None]
+
+    def patched_apply():
+        if override.upper_body_pose_active and override.target_upper_body_pose_idx != last_idx[0]:
+            idx = override.target_upper_body_pose_idx
+            pose_dict = poses[idx] if idx < len(poses) else {}
+            action_term.set_fixed_pose(pose_dict)
+            last_idx[0] = idx
+        original_apply()
+
+    action_term.apply_actions = patched_apply
 
 
 _PYTHON_TAG_RE = re.compile(r"!!python/\S+")
@@ -539,10 +617,16 @@ def run_play(task_id: str, cfg: PlayConfig):
       else:
         print(f"[INFO] Keyboard override: '{term_name}' term not found, skipping")
 
-    print(
-      "[INFO] Keyboard overrides: numpad 8/2=vel_x, 4/6=vel_y, "
-      "7/9=yaw, +/-=height, 5=zero vel, 0=reset height"
-    )
+    # Upper body pose switching via F8-F11 keys.
+    act_mgr = env.unwrapped.action_manager
+    if "upper_body_motion" in getattr(act_mgr, "_terms", {}):
+        _patch_upper_body_pose(act_mgr._terms["upper_body_motion"], override, PREDEFINED_POSES)
+        pose_keys = ", ".join(f"F{i+8}=pose{i}" for i in range(len(PREDEFINED_POSES)))
+        print(f"[INFO] Keyboard overrides: numpad 8/2=vel_x, 4/6=vel_y, "
+              f"7/9=yaw, +/-=height, 5=zero vel, 0=reset height, {pose_keys}")
+    else:
+        print("[INFO] Keyboard overrides: numpad 8/2=vel_x, 4/6=vel_y, "
+              "7/9=yaw, +/-=height, 5=zero vel, 0=reset height")
 
   if resolved_viewer == "native":
     NativeMujocoViewer(env, policy, key_callback=override).run()

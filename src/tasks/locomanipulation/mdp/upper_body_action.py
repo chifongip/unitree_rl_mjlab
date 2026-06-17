@@ -269,6 +269,44 @@ class UpperBodyMotionAction(ActionTerm):
     target = self._gather_targets()
     self._entity.set_joint_position_target(target, joint_ids=self._joint_ids)
 
+  def set_fixed_pose(self, pose_dict: dict[str, float] | None) -> None:
+    """Set a fixed upper body pose for all environments (runtime override).
+
+    Args:
+      pose_dict: Joint name to radians mapping. None or empty dict resets
+        to the model's default joint positions.
+    """
+    all_names = self._entity.joint_names
+    fixed = self._default_joint_pos[0].clone()
+    if pose_dict:
+      for name, value in pose_dict.items():
+        matches = [
+          i for i, jid in enumerate(self._joint_ids) if all_names[jid] == name
+        ]
+        if not matches:
+          raise ValueError(f"Joint '{name}' not found in upper-body joints")
+        fixed[matches[0]] = value
+    if self._waist_zero_cols:
+      fixed[self._waist_zero_cols] = 0.0
+
+    self._fixed_pose = fixed
+    self._pose_target[:] = fixed.unsqueeze(0).expand_as(self._pose_target)
+    self._entity.write_joint_state_to_sim(
+      self._pose_target,
+      torch.zeros_like(self._pose_target),
+      env_ids=slice(None),
+      joint_ids=self._joint_ids,
+    )
+    self._entity._data.joint_pos_target[:, self._joint_ids] = self._pose_target
+
+  def get_fixed_pose(self) -> dict[str, float]:
+    """Return the current fixed pose as {joint_name: radians}."""
+    all_names = self._entity.joint_names
+    return {
+      all_names[self._joint_ids[i]]: self._pose_target[0, i].item()
+      for i in range(self._num_upper_dofs)
+    }
+
 
 @dataclass(kw_only=True)
 class UpperBodyMotionActionCfg(ActionTermCfg):

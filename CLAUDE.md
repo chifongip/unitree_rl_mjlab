@@ -288,7 +288,9 @@ Symmetric data augmentation doubles mini-batches by mirroring across the sagitta
 - `fixed_height` (command cfg): pin commanded height
 - `fixed_waist_yaw` (command cfg): pin waist yaw command angle (radians)
 
-**Keyboard controls** (native viewer, locomanipulation): `KeyboardCommandOverride` in `play.py` provides numpad 8/2=vel_x, 4/6=vel_y, 7/9=yaw, +/-=height, 1/3=waist_yaw, 5=zero vel (with exponential decay), 0=reset height+waist_yaw. Velocity adjustments are instant; zeroing uses decay toward zero (~1s time constant at 50Hz). Monkey-patches `compute()` on twist, base_height, and waist_yaw command terms.
+**Keyboard controls** (native viewer, locomanipulation): `KeyboardCommandOverride` in `play.py` provides numpad 8/2=vel_x, 4/6=vel_y, 7/9=yaw, +/-=height, 1/3=waist_yaw, 5=zero vel (with exponential decay), 0=reset height+waist_yaw. Velocity adjustments are instant; zeroing uses decay toward zero (~1s time constant at 50Hz). F8-F11 switch between predefined upper body poses (defined in `PREDEFINED_POSES` list in `play.py`). Monkey-patches `compute()` on twist, base_height, and waist_yaw command terms, and `apply_actions()` on the `upper_body_motion` action term. `UpperBodyMotionAction.set_fixed_pose(pose_dict)` and `get_fixed_pose()` provide runtime pose switching.
+
+**MuJoCo viewer key conflicts**: F1-F7 are consumed by MuJoCo's internal UI overlays (help, info, profiler, sensor, fullscreen, frame, label). All letter keys (A-Z) are visualization toggle shortcuts. `[`/`]` cycle cameras. Space/-/=/Tab/Escape/Enter/Backspace/ arrows are all taken. F8-F12, number keys 6-9, and navigation cluster (Home/End/Insert/Delete/Up/Down/PageDown) are completely free for user key callbacks.
 
 ### Play Mode Config Restoration
 
