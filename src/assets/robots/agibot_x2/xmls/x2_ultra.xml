@@ -99,18 +99,19 @@
                   <inertial pos="0.035428 2.5e-05 -0.049572" quat="0.614657 0.350346 0.350824 0.613496" mass="1.01617" diaginertia="0.007937 0.0068711 0.0025949"/>
                   <joint name="left_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.262 0.262" actuatorfrcrange="-24 24"/>
                   <geom class="visual" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="1 0.5 0 1" mesh="left_ankle_roll_link"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.05 0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.065 0.025 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.05 -0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.065 -0.025 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.11 0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.11 -0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.02 -0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.02 0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.07 -0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.07 0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.139 0 -0.066" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.128 0 -0.02" rgba="1 0.5 0 1"/>
+                  <site name="left_foot" pos="0.05 0 -0.068"/>
+                  <geom name="left_foot1_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.05 0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot2_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.065 0.025 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot3_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.05 -0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot4_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.065 -0.025 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot5_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.11 0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot6_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.11 -0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot7_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.02 -0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot8_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.02 0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot9_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.07 -0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot10_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.07 0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot11_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.139 0 -0.066" rgba="1 0.5 0 1"/>
+                  <geom name="left_foot12_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.128 0 -0.02" rgba="1 0.5 0 1"/>
                 </body>
               </body>
             </body>
@@ -146,18 +147,19 @@
                   <inertial pos="0.035428 2.5e-05 -0.049572" quat="0.614657 0.350346 0.350824 0.613496" mass="1.01617" diaginertia="0.007937 0.0068711 0.0025949"/>
                   <joint name="right_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2625 0.2625" actuatorfrcrange="-24 24"/>
                   <geom class="visual" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="1 0.5 0 1" mesh="right_ankle_roll_link"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.05 0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.065 0.025 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.05 -0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.065 -0.025 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.11 0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.11 -0.05 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.02 -0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="-0.02 0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.07 -0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.07 0.06 -0.068" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.139 0 -0.066" rgba="1 0.5 0 1"/>
-                  <geom class="collision" type="sphere" group="3" size="0.005" pos="0.128 0 -0.02" rgba="1 0.5 0 1"/>
+                  <site name="right_foot" pos="0.05 0 -0.068"/>
+                  <geom name="right_foot1_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.05 0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot2_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.065 0.025 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot3_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.05 -0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot4_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.065 -0.025 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot5_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.11 0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot6_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.11 -0.05 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot7_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.02 -0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot8_collision" class="collision" type="sphere" group="3" size="0.005" pos="-0.02 0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot9_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.07 -0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot10_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.07 0.06 -0.068" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot11_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.139 0 -0.066" rgba="1 0.5 0 1"/>
+                  <geom name="right_foot12_collision" class="collision" type="sphere" group="3" size="0.005" pos="0.128 0 -0.02" rgba="1 0.5 0 1"/>
                 </body>
               </body>
             </body>
@@ -337,10 +339,11 @@
     <framequat name="imu1-quat" objtype="site" objname="imu_1"/> -->
 
     <framequat name="body-orientation" objtype="site" objname="imu_0" noise="0"/>
-    <gyro name="body-angular-velocity" site="imu_0" noise="0.001"/>
+    <gyro name="imu_ang_vel" site="imu_0" noise="0.001"/>
     <framepos name="body-linear-pos" objtype="site" objname="imu_0"/>
-    <velocimeter name="body-linear-vel" site="imu_0"/>
+    <velocimeter name="imu_lin_vel" site="imu_0"/>
     <accelerometer name="body-linear-acceleration" site="imu_0" noise="0.001"/>
+    <subtreeangmom name="root_angmom" body="pelvis"/>
 
     <jointpos name = 'jointpos_left_hip_pitch_joint' joint = 'left_hip_pitch_joint' noise = "0" />
     <jointpos name = 'jointpos_left_hip_roll_joint' joint = 'left_hip_roll_joint' noise = "0" />
