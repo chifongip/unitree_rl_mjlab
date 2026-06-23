@@ -121,14 +121,27 @@ def get_joint_info(model):
 def get_foot_geom_info(model, foot_geom_count, is_capsule=True):
     """Get foot geom local points in the ankle_roll_link frame.
 
-    For capsules (G1): each geom produces 2 endpoints (14 points per foot).
-    For spheres (X2): each geom produces 1 point (12 points per foot).
+    Off-plane geoms (z deviates > 5mm from median) are automatically excluded.
+    For capsules (G1): each geom produces 2 endpoints.
+    For spheres (X2): each geom produces 1 point.
     """
     foot_geoms = {"left": [], "right": []}
     for side in ("left", "right"):
+        geom_ids = []
+        geom_names = []
         for i in range(1, foot_geom_count + 1):
             name = f"{side}_foot{i}_collision"
             gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            geom_ids.append(gid)
+            geom_names.append(name)
+
+        filtered_ids = exclude_off_plane_geoms(model, geom_ids)
+        excluded = set(geom_ids) - set(filtered_ids)
+        if excluded:
+            excluded_names = [geom_names[geom_ids.index(gid)] for gid in excluded]
+            print(f"  Excluded off-plane {side} foot geoms: {excluded_names}")
+
+        for gid in filtered_ids:
             pos = model.geom_pos[gid].copy()
             if is_capsule:
                 quat = model.geom_quat[gid].copy()      # [4] (wxyz)
@@ -144,6 +157,13 @@ def get_foot_geom_info(model, foot_geom_count, is_capsule=True):
     left_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
     right_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
     return foot_geoms, left_body, right_body
+
+
+def exclude_off_plane_geoms(model, geom_ids, z_tol=0.005):
+    """Filter out foot geoms whose local z deviates from the median sole plane."""
+    zs = np.array([model.geom_pos[gid][2] for gid in geom_ids])
+    median_z = np.median(zs)
+    return [gid for gid in geom_ids if abs(model.geom_pos[gid][2] - median_z) <= z_tol]
 
 
 def _quat_rotate(quat, vec):
