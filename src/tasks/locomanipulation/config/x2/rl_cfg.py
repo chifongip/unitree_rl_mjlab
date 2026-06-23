@@ -53,5 +53,5 @@ def agibot_x2_locomanipulation_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     experiment_name="x2_locomanipulation",
     save_interval=500,
     num_steps_per_env=24,
-    max_iterations=20001,
+    max_iterations=10001,
   )

@@ -37,7 +37,7 @@ python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/da
 ## Architecture
 
 ### Locomanipulation Task
-Policy controls 15 DOF (12 leg + waist_yaw/roll/pitch). Upper body (14 arm DOF) driven by `UpperBodyMotionAction` with `exclude_waist=True`. Config: `src/tasks/locomanipulation/config/<robot>/env_cfgs.py`. Base factory: `src/tasks/locomanipulation/locomanipulation_env_cfg.py`.
+Policy controls lower-body + waist DOFs. Upper body driven by `UpperBodyMotionAction` with `exclude_waist=True`. Config: `src/tasks/locomanipulation/config/<robot>/env_cfgs.py`. Base factory: `src/tasks/locomanipulation/locomanipulation_env_cfg.py`.
 
 **Dict-based configs, no `@configclass`**. All manager configs are plain dicts of `TermCfg` objects. Hard requirement from mjlab.
 
@@ -52,11 +52,11 @@ Policy controls 15 DOF (12 leg + waist_yaw/roll/pitch). Upper body (14 arm DOF) 
 | Wrist order | roll/pitch/yaw | roll only | yaw/pitch/roll |
 | Arm joints | 14 (7/arm) | 10 (5/arm) | 14 (7/arm) |
 | Symmetry class | `G1Symmetry` (29) | `G1_23DOFSymmetry` (23) | `X2Symmetry` (29) |
-| Motion data | `accad_all.pkl` | `accad_all_g1_23dof_clean.pkl` | `amass_all_x2_clean.pkl` |
-| `motion_dof_indices` | None (cols 12:29) | (15,16,17,18,19,22,23,24,25,26) | `tuple(range(15, 29))` |
-| Nominal height | 0.76m | 0.76m | 0.68m |
+| Motion data | `accad_all.pkl` | `accad_all.pkl` | `amass_all.pkl` |
+| `motion_dof_indices` | (15,16,17,18,19,20,21,22,23,24,25,26,27,28) | (15,16,17,18,19,22,23,24,25,26) | (15,16,17,18,19,20,21,22,23,24,25,26,27,28) |
+| Nominal height | 0.76m | 0.76m | 0.66m |
 | Foot geoms | 7/foot | 7/foot | 12/foot |
-| Height postures | `scripts/postures.py` | Same | None |
+| Height postures | `scripts/postures.py` | Same | `scripts/postures_x2.py` |
 
 ### Key Gotchas
 - **Joint order matters for symmetry**: Symmetry is index-based. G1 waist = yaw/roll/pitch, X2 waist = yaw/pitch/roll. Wrong indices = wrong mirroring.

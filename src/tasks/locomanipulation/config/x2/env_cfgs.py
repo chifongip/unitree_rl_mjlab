@@ -21,15 +21,16 @@ from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActi
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
 
 
-def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Agibot X2 rough terrain locomanipulation configuration."""
-  cfg = make_locomanipulation_env_cfg()
+# 29-DOF motion data column indices for the 14 upper-body DOFs.
+# Maps: left_shoulder_pitch(15), left_shoulder_roll(16),
+# left_shoulder_yaw(17), left_elbow(18), left_wrist_yaw(19),
+# left_wrist_pitch(20), left_wrist_roll(21),
+# right_shoulder_pitch(22), right_shoulder_roll(23),
+# right_shoulder_yaw(24), right_elbow(25), right_wrist_yaw(26),
+# right_wrist_pitch(27), right_wrist_roll(28).
+MOTION_DOF_INDICES = (15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28)
 
-  cfg.sim.mujoco.ccd_iterations = 500
-  cfg.sim.contact_sensor_maxmatch = 500
-  cfg.sim.nconmax = 48
-
-  LOWER_BODY_JOINT_NAMES = (
+LOWER_BODY_JOINT_NAMES = (
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
     "left_hip_yaw_joint",
@@ -45,7 +46,29 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     "waist_yaw_joint",
     "waist_roll_joint",
     "waist_pitch_joint",
-  )
+)
+
+LOWER_BODY_JOINT_PATTERNS = (
+    r".*_hip_pitch_joint",
+    r".*_hip_roll_joint",
+    r".*_hip_yaw_joint",
+    r".*_knee_joint",
+    r".*_ankle_pitch_joint",
+    r".*_ankle_roll_joint",
+)
+
+LOWER_BODY_JOINT_CFG = SceneEntityCfg("robot", joint_names=LOWER_BODY_JOINT_PATTERNS)
+
+
+def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Agibot X2 rough terrain locomanipulation configuration."""
+  cfg = make_locomanipulation_env_cfg()
+
+  ## Scene & Sensors ##
+
+  cfg.sim.mujoco.ccd_iterations = 500
+  cfg.sim.contact_sensor_maxmatch = 500
+  cfg.sim.nconmax = 48
 
   robot_cfg, action_scale = get_agibot_x2_robot_cfg()
   cfg.scene.entities = {"robot": robot_cfg}
@@ -96,6 +119,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
     cfg.scene.terrain.terrain_generator.curriculum = True
 
+  ## Actions ##
+
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
   joint_pos_action.scale = lower_body_action_scale
@@ -112,23 +137,26 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   )
 
   # Upper-body motion playback from cleaned AMASS data.
-  # 29-DOF motion: cols 15-28 are the 14 arm joints (7 per arm).
-  motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "amass_all_x2_clean.pkl")
+  motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "amass_all.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
-    motion_dof_indices=tuple(range(15, 29)),
+    motion_dof_indices=MOTION_DOF_INDICES,
     default_pose_ratio=1.0,
     waist_yaw_only=True,
     exclude_waist=True,
     pose_only=False,
   )
 
+  ## Commands ##
+
   cfg.viewer.body_name = "torso_link"
 
   twist_cmd = cfg.commands["twist"]
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-  twist_cmd.viz.z_offset = 1.05
+  twist_cmd.viz.z_offset = 1.15
+
+  ## Observations ##
 
   cfg.observations["critic"].terms["foot_height"].params[
     "asset_cfg"
@@ -137,10 +165,39 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     "asset_cfg"
   ].body_names = ("left_wrist_yaw_link", "right_wrist_yaw_link")
 
+  ## Hyperparameters ##
+
+  # Command tuning.
+  cfg.commands["base_height"].nominal_height = 0.66
+  cfg.commands["base_height"].max_deviation_down = 0.26
+  cfg.commands["base_height"].max_deviation_up = 0.0
+  cfg.commands["base_height"].nominal_height_ratio = 0.05
+  cfg.commands["waist_yaw"].nominal_yaw_ratio = 0.05
+
+  # Observation tuning.
+  cfg.observations["actor"].terms["phase"].params["period"] = 0.6
+
+  # Reward weights.
+  cfg.rewards["leg_joint_vel_penalty"].weight = -0.05
+  cfg.rewards["base_drift_penalty"].weight = -2.0
+  cfg.rewards["foot_swing_height"].weight = 0.0
+
+  # Reward tuning params.
+  cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.5)
+  cfg.rewards["track_angular_velocity"].params["ang_vel_xy_weight"] = 0.05
+  cfg.rewards["stand_still"].params["command_threshold"] = 0.1
+  cfg.rewards["foot_gait"].params["period"] = 0.6
+  cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
+  cfg.rewards["body_orientation_l2"].params["standing_weight"] = 2.0
+  cfg.rewards["pose"].params["nominal_height"] = 0.66
+
+  ## Events ##
+
   cfg.events["foot_friction"].params["asset_cfg"].geom_names = geom_names
   cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
 
   # External force on hands for carrying-heavy-object training.
+  # Standing envs: triangle wave oscillation. Walking envs: resistance projection.
   cfg.events["hand_force"] = EventTermCfg(
     func=TriangleWaveForceEvent,
     mode="step",
@@ -178,6 +235,67 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
       "no_projection_ratio": 0.2,
     },
   )
+
+  ## Rewards ##
+
+  cfg.rewards["pose"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+  cfg.rewards["pose"].params["std_standing"] = {
+    r".*hip_pitch.*": 0.05,
+    r".*hip_roll.*": 0.05,
+    r".*hip_yaw.*": 0.05,
+    r".*knee.*": 0.05,
+    r".*ankle_pitch.*": 0.05,
+    r".*ankle_roll.*": 0.05,
+  }
+  cfg.rewards["pose"].params["std_walking"] = {
+    r".*hip_pitch.*": 0.5,
+    r".*hip_roll.*": 0.15,
+    r".*hip_yaw.*": 0.25,
+    r".*knee.*": 0.5,
+    r".*ankle_pitch.*": 0.15,
+    r".*ankle_roll.*": 0.1,
+  }
+  cfg.rewards["pose"].params["std_running"] = {
+    r".*hip_pitch.*": 0.5,
+    r".*hip_roll.*": 0.25,
+    r".*hip_yaw.*": 0.35,
+    r".*knee.*": 0.5,
+    r".*ankle_pitch.*": 0.25,
+    r".*ankle_roll.*": 0.1,
+  }
+
+  # Restrict stand_still, joint_acc_l2, joint_pos_limits and leg_joint_vel_penalty to
+  # lower-body joints.
+  cfg.rewards["stand_still"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+  cfg.rewards["stand_still"].params["base_height_command_name"] = "base_height"
+  cfg.rewards["joint_acc_l2"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+  cfg.rewards["joint_pos_limits"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+  cfg.rewards["leg_joint_vel_penalty"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+
+  cfg.rewards["body_orientation_l2"].params["asset_cfg"].body_names = ("torso_link",)
+  cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
+  cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
+  cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
+  cfg.rewards["foot_swing_height"].params["asset_cfg"].site_names = site_names
+  cfg.rewards["feet_distance"].params["asset_cfg"].site_names = site_names
+  cfg.rewards["self_collisions"] = RewardTermCfg(
+    func=mdp.self_collision_cost,
+    weight=-1.0,
+    params={"sensor_name": self_collision_cfg.name, "force_threshold": 10.0},
+  )
+
+  ## Height Postures ##
+
+  import importlib.util as _ilu
+  _postures_path = str(Path(__file__).resolve().parents[5] / "scripts" / "postures_x2.py")
+  _spec = _ilu.spec_from_file_location("postures_x2", _postures_path)
+  _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+  height_postures = _mod.HEIGHT_POSTURES
+  cfg.rewards["pose"].params["height_postures"] = height_postures
+  cfg.rewards["stand_still"].params["height_postures"] = height_postures
+
+  ## Curriculum ##
+
   cfg.curriculum["force_curriculum"] = CurriculumTermCfg(
     func=mdp.force_scale_staged,
     params={
@@ -220,8 +338,6 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
       ],
     },
   )
-  cfg.commands["base_height"].nominal_height_ratio = 0.05
-
   cfg.curriculum["waist_yaw_scale"] = CurriculumTermCfg(
     func=mdp.waist_yaw_scale_staged,
     params={
@@ -236,127 +352,11 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
       ],
     },
   )
-  cfg.commands["waist_yaw"].nominal_yaw_ratio = 0.05
 
-  # Tighten angular velocity tracking reward for low-speed rotation.
-  cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.5)
-  cfg.rewards["track_angular_velocity"].params["ang_vel_xy_weight"] = 0.05
-  cfg.rewards["stand_still"].params["command_threshold"] = 0.1
-  cfg.observations["actor"].terms["phase"].params["period"] = 0.6
-  cfg.rewards["foot_gait"].params["period"] = 0.6
-  cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
-  cfg.rewards["foot_swing_height"].weight = 0.0
+  ## Play Mode ##
 
-  # Height command and reward settings.
-  cfg.commands["base_height"].nominal_height = 0.66
-  cfg.commands["base_height"].max_deviation_down = 0.26
-  cfg.commands["base_height"].max_deviation_up = 0.0
-  cfg.rewards["pose"].params["nominal_height"] = 0.66
-
-  # Restrict pose reward to lower-body joints only.
-  cfg.rewards["pose"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=(
-      r".*_hip_pitch_joint",
-      r".*_hip_roll_joint",
-      r".*_hip_yaw_joint",
-      r".*_knee_joint",
-      r".*_ankle_pitch_joint",
-      r".*_ankle_roll_joint",
-    )
-  )
-  cfg.rewards["pose"].params["std_standing"] = {
-    r".*hip_pitch.*": 0.05,
-    r".*hip_roll.*": 0.05,
-    r".*hip_yaw.*": 0.05,
-    r".*knee.*": 0.05,
-    r".*ankle_pitch.*": 0.05,
-    r".*ankle_roll.*": 0.05,
-  }
-  cfg.rewards["pose"].params["std_walking"] = {
-    r".*hip_pitch.*": 0.5,
-    r".*hip_roll.*": 0.15,
-    r".*hip_yaw.*": 0.25,
-    r".*knee.*": 0.5,
-    r".*ankle_pitch.*": 0.15,
-    r".*ankle_roll.*": 0.1,
-  }
-  cfg.rewards["pose"].params["std_running"] = {
-    r".*hip_pitch.*": 0.5,
-    r".*hip_roll.*": 0.25,
-    r".*hip_yaw.*": 0.35,
-    r".*knee.*": 0.5,
-    r".*ankle_pitch.*": 0.25,
-    r".*ankle_roll.*": 0.1,
-  }
-
-  # Load X2 height postures computed by scripts/compute_height_postures.py.
-  import importlib.util as _ilu
-  _postures_path = str(Path(__file__).resolve().parents[5] / "scripts" / "postures_x2.py")
-  _spec = _ilu.spec_from_file_location("postures_x2", _postures_path)
-  _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
-  cfg.rewards["pose"].params["height_postures"] = _mod.HEIGHT_POSTURES
-
-  # Restrict stand_still, joint_acc_l2, joint_pos_limits and leg_joint_vel_penalty to
-  # lower-body joints.
-  cfg.rewards["stand_still"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=(
-      r".*_hip_pitch_joint",
-      r".*_hip_roll_joint",
-      r".*_hip_yaw_joint",
-      r".*_knee_joint",
-      r".*_ankle_pitch_joint",
-      r".*_ankle_roll_joint",
-    )
-  )
-  cfg.rewards["stand_still"].params["base_height_command_name"] = "base_height"
-  cfg.rewards["stand_still"].params["height_postures"] = _mod.HEIGHT_POSTURES
-  cfg.rewards["joint_acc_l2"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=(
-      r".*_hip_pitch_joint",
-      r".*_hip_roll_joint",
-      r".*_hip_yaw_joint",
-      r".*_knee_joint",
-      r".*_ankle_pitch_joint",
-      r".*_ankle_roll_joint",
-    )
-  )
-  cfg.rewards["joint_pos_limits"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=(
-      r".*_hip_pitch_joint",
-      r".*_hip_roll_joint",
-      r".*_hip_yaw_joint",
-      r".*_knee_joint",
-      r".*_ankle_pitch_joint",
-      r".*_ankle_roll_joint",
-    )
-  )
-  cfg.rewards["leg_joint_vel_penalty"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=(
-      r".*_hip_pitch_joint",
-      r".*_hip_roll_joint",
-      r".*_hip_yaw_joint",
-      r".*_knee_joint",
-      r".*_ankle_pitch_joint",
-      r".*_ankle_roll_joint",
-    )
-  )
-
-  cfg.rewards["body_orientation_l2"].params["asset_cfg"].body_names = ("torso_link",)
-  cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
-  cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
-  cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
-  cfg.rewards["foot_swing_height"].params["asset_cfg"].site_names = site_names
-  cfg.rewards["feet_distance"].params["asset_cfg"].site_names = site_names
-  cfg.rewards["self_collisions"] = RewardTermCfg(
-    func=mdp.self_collision_cost,
-    weight=-1.0,
-    params={"sensor_name": self_collision_cfg.name, "force_threshold": 10.0},
-  )
-
-  # Apply play mode overrides.
   if play:
     cfg.episode_length_s = int(1e9)
-
     cfg.observations["actor"].enable_corruption = False
     cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
@@ -366,9 +366,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     cfg.events["hand_force"].params["force_range_max"] = {
         "x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-40.0, 0.0),
     }
-    # Uniform force (same on both hands):
-    # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": 0.0}
-    
+
     cfg.events["randomize_terrain"] = EventTermCfg(
       func=envs_mdp.randomize_terrain,
       mode="reset",
@@ -392,6 +390,17 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
       "right_wrist_pitch_joint": 0.0,
       "right_wrist_yaw_joint": 0.0,
     }
+
+    # Per-hand constant force (per-body format, body_frame rotates with robot):
+    # cfg.events["hand_force"].params["constant_force"] = {
+    #     "left_wrist_yaw_link": {"x": 5.0, "y": -5.0, "z": -20.0},
+    #     "right_wrist_yaw_link": {"x": 5.0, "y": 5.0, "z": -20.0},
+    # }
+    # cfg.events["hand_force"].params["body_frame"] = True
+
+    # Uniform force (same on both hands):
+    # cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": 0.0}
+
     cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
     cfg.commands["base_height"].fixed_height = 0.66
     cfg.commands["waist_yaw"].fixed_waist_yaw = 0.0

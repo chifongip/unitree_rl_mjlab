@@ -1,10 +1,11 @@
 # Locomanipulation Task
 
-The locomanipulation task trains the G1 humanoid to walk while carrying objects. The policy controls 12 lower-body joints (hip, knee, ankle) while the upper body is driven by motion playback from the ACCAD dataset. This split design lets the policy focus on balance and velocity tracking without learning arm coordination from scratch.
+The locomanipulation task trains humanoid robots to walk while carrying objects. The policy controls lower-body joints (hip, knee, ankle) + waist while the upper body is driven by motion playback. This split design lets the policy focus on balance and velocity tracking without learning arm coordination from scratch.
 
-Supports two robot variants:
-- **G1 29-DOF**: 17 upper-body DOFs (waist, arms, wrists)
-- **G1 23-DOF**: 11 upper-body DOFs (no waist roll/pitch, no wrist pitch/yaw)
+Supports three robot variants:
+- **G1 29-DOF**: 14 upper-body DOFs (7/arm: shoulder, elbow, wrist roll/pitch/yaw)
+- **G1 23-DOF**: 10 upper-body DOFs (5/arm: shoulder, elbow, wrist roll)
+- **Agibot X2**: 14 upper-body DOFs (7/arm: shoulder, elbow, wrist yaw/pitch/roll)
 
 ## Architecture
 
@@ -16,10 +17,14 @@ src/tasks/locomanipulation/
 │   │   ├── __init__.py                  # Task registration (29-DOF)
 │   │   ├── env_cfgs.py                  # G1 robot-specific overrides
 │   │   └── rl_cfg.py                    # PPO config with symmetry
-│   └── g1_23dof/
-│       ├── __init__.py                  # Task registration (23-DOF)
-│       ├── env_cfgs.py                  # G1-23DOF robot-specific overrides
-│       └── rl_cfg.py                    # PPO config with 23-DOF symmetry
+│   ├── g1_23dof/
+│   │   ├── __init__.py                  # Task registration (23-DOF)
+│   │   ├── env_cfgs.py                  # G1-23DOF robot-specific overrides
+│   │   └── rl_cfg.py                    # PPO config with 23-DOF symmetry
+│   └── x2/
+│       ├── __init__.py                  # Task registration (X2)
+│       ├── env_cfgs.py                  # X2 robot-specific overrides
+│       └── rl_cfg.py                    # PPO config with X2 symmetry
 ├── mdp/
 │   ├── rewards.py                       # Velocity, height, posture, gait rewards
 │   ├── observations.py                  # Foot, wrist, phase observations
@@ -27,9 +32,10 @@ src/tasks/locomanipulation/
 │   ├── terminations.py                  # Illegal contact termination
 │   ├── curriculums.py                   # Force, pose, height, velocity curricula
 │   ├── symmetry.py                      # Left-right sagittal plane mirroring
-│   ├── upper_body_action.py             # ACCAD motion playback action
+│   ├── upper_body_action.py             # Motion playback action
 │   ├── velocity_command.py              # Velocity command term
-│   └── height_command.py                # Base height command term
+│   ├── height_command.py                # Base height command term
+│   └── waist_yaw_command.py             # Waist yaw command term
 └── rl/
     ├── __init__.py
     └── runner.py                        # OnPolicy runners with ONNX export
@@ -43,15 +49,17 @@ src/tasks/locomanipulation/
 | `Unitree-G1-Locomanipulation-Flat` | G1 29-DOF | Flat | `LocomanipulationOnPolicyRunner` |
 | `Unitree-G1-23Dof-Locomanipulation-Rough` | G1 23-DOF | Rough | `G1_23DOF_LocomanipulationOnPolicyRunner` |
 | `Unitree-G1-23Dof-Locomanipulation-Flat` | G1 23-DOF | Flat | `G1_23DOF_LocomanipulationOnPolicyRunner` |
+| `Agibot-X2-Locomanipulation-Rough` | Agibot X2 | Rough | `LocomanipulationOnPolicyRunner` |
+| `Agibot-X2-Locomanipulation-Flat` | Agibot X2 | Flat | `LocomanipulationOnPolicyRunner` |
 
 ## Key Design Decisions
 
 ### Split Action Space
 
-The policy outputs actions for 12 lower-body joints only. Upper-body joints are controlled by `UpperBodyMotionAction`, which reads from ACCAD motion data:
+The policy outputs actions for lower-body joints + waist. Upper-body joints are controlled by `UpperBodyMotionAction`, which reads from motion data:
 
-- **Training (`pose_only=True`)**: Samples a random frame at episode reset and holds it. Reduces training complexity.
-- **Deployment (`pose_only=False`)**: Plays back motion clips frame-by-frame for dynamic upper-body motion.
+- **`pose_only=False`**: Plays back motion clips frame-by-frame for dynamic upper-body motion (default for all robots).
+- **`pose_only=True`**: Samples a random frame at episode reset and holds it (G1 29-DOF only).
 
 The `default_pose_ratio` curriculum gradually transitions from HOME_KEYFRAME to diverse motion poses during training.
 
@@ -60,15 +68,15 @@ The `default_pose_ratio` curriculum gradually transitions from HOME_KEYFRAME to 
 `HandForceEvent` simulates carrying heavy objects by applying random wrenches to end-effectors:
 
 - **Jacobian-based bounds**: `MaxForceEstimator` computes physically plausible force limits using `F_max = min(effort_limit / |J|)` per axis.
-- **Impulse lifecycle**: Forces applied for 8-12s, then 2-4s cooldown. A fraction (`no_force_ratio=0.05`) of envs stay force-free.
+- **Impulse lifecycle**: Forces applied for 3-5s, then cooldown. A fraction (`no_force_ratio=0.3`) of envs stay force-free.
 - **Dirichlet axis scaling**: Per-env random scaling across x/y/z axes for diversity.
-- **Curriculum**: `force_scale_staged` ramps force from 0 to max over 15k iterations.
+- **Curriculum**: `force_scale_staged` ramps force from 0 to max over 5k iterations.
 
 ### Height Command
 
-`BaseHeightCommand` commands an absolute z-height (range 0.50m–0.785m for G1):
+`BaseHeightCommand` commands an absolute z-height (range 0.50m–0.76m for G1):
 
-- **Height-dependent posture**: `variable_posture` and `stand_still` rewards look up target joint angles from a 7-entry table (0.50m to 0.785m at 0.05m intervals).
+- **Height-dependent posture**: `variable_posture` and `stand_still` rewards look up target joint angles from a height posture table (0.50m to 0.76m at 0.02m intervals).
 - **Curriculum**: `height_scale_staged` expands the height range over training.
 - **Standing weight**: `track_base_height` applies 2x weight when stationary (`|twist_cmd| < 0.1`).
 
@@ -88,17 +96,18 @@ When velocity command magnitude < 0.1, three rewards reinforce stable stance:
 | Reward | Weight | Role |
 |--------|--------|------|
 | `stand_still` | -1.0 | Hold target joint positions |
-| `leg_joint_vel_penalty` | -1e-3 | Damp lower-body joint velocities |
+| `leg_joint_vel_penalty` | -0.05 | Damp lower-body joint velocities |
 | `body_orientation_l2` | -1.0 | Stay upright |
 
 ### Curricula
 
 | Curriculum | What it controls | Schedule |
 |------------|------------------|----------|
-| `force_scale_staged` | External force magnitude | Step-based ramp over 15k iterations |
+| `force_scale_staged` | External force magnitude | Step-based ramp over 5k iterations |
 | `default_pose_ratio_staged` | HOME_KEYFRAME fraction | Starts at 1.0, decreases over training |
 | `height_scale_staged` | Height command range | Expands from nominal-only to full range |
 | `command_vel` | Velocity command ranges | Staged expansion |
+| `waist_yaw_scale` | Waist yaw command range | Expands from nominal-only to full range |
 | `terrain_levels` | Terrain difficulty | Velocity-based advancement |
 
 ## Training
@@ -107,23 +116,29 @@ When velocity command magnitude < 0.1, three rewards reinforce stable stance:
 
 ```bash
 # G1 29-DOF, flat terrain
-python scripts/train.py Unitree-G1-Locomanipulation-Flat --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Locomanipulation-Flat --env.scene.num-envs=4096 --agent.logger=tensorboard
 
 # G1 29-DOF, rough terrain
-python scripts/train.py Unitree-G1-Locomanipulation-Rough --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Locomanipulation-Rough --env.scene.num-envs=4096 --agent.logger=tensorboard
 
 # G1 23-DOF, flat terrain
-python scripts/train.py Unitree-G1-23Dof-Locomanipulation-Flat --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-23Dof-Locomanipulation-Flat --env.scene.num-envs=4096 --agent.logger=tensorboard
 
 # G1 23-DOF, rough terrain
-python scripts/train.py Unitree-G1-23Dof-Locomanipulation-Rough --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-23Dof-Locomanipulation-Rough --env.scene.num-envs=4096 --agent.logger=tensorboard
+
+# Agibot X2, flat terrain
+python scripts/train.py Agibot-X2-Locomanipulation-Flat --env.scene.num-envs=4096 --agent.logger=tensorboard
+
+# Agibot X2, rough terrain
+python scripts/train.py Agibot-X2-Locomanipulation-Rough --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
 ### Multi-GPU Training
 
 ```bash
 python scripts/train.py Unitree-G1-Locomanipulation-Flat \
-    --gpu-ids 0 1 --env.scene.num-envs=4096
+    --gpu-ids 0 1 --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
 ### Resume from Checkpoint
@@ -131,7 +146,7 @@ python scripts/train.py Unitree-G1-Locomanipulation-Flat \
 ```bash
 python scripts/train.py Unitree-G1-Locomanipulation-Flat \
     --checkpoint-file logs/rsl_rl/g1_locomanipulation/<date>/model_10000.pt \
-    --env.scene.num-envs=4096
+    --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
 ### Key CLI Overrides
@@ -140,7 +155,7 @@ Any config field can be overridden via `--env.<path>.<field>=<value>`:
 
 ```bash
 # More envs for faster training
---env.scene.num-envs=4096
+--env.scene.num-envs=4096 --agent.logger=tensorboard
 
 # Disable symmetry augmentation
 --agent.algorithm.symmetry_cfg=False
@@ -190,8 +205,10 @@ python scripts/play.py Unitree-G1-Locomanipulation-Flat \
 | KP_4 / KP_6 | lin_vel_y +/- | 0.1 m/s |
 | KP_7 / KP_9 | ang_vel_z +/- | 0.1 rad/s |
 | KP_ADD / KP_SUBTRACT | height +/- | 0.02 m |
+| KP_1 / KP_3 | waist_yaw +/- | 0.1 rad/s |
 | KP_5 | zero all velocity | exponential decay |
 | KP_0 | reset height to nominal | instant |
+| F8-F11 | predefined upper body poses | instant |
 
 ### Play-Mode Testing Flags
 
@@ -319,7 +336,7 @@ Exported ONNX files include:
 python scripts/compute_height_postures.py
 ```
 
-Computes IK-based joint postures for G1 at different standing heights (0.50m–0.785m). Used by `variable_posture` and `stand_still` rewards to look up target joint angles from commanded height.
+Computes IK-based joint postures for G1 at different standing heights (0.50m–0.76m). Used by `variable_posture` and `stand_still` rewards to look up target joint angles from commanded height.
 
 ### Check Motion Collisions
 
@@ -336,40 +353,54 @@ python scripts/check_motion_collisions.py --show
 # Remove collision frames and save cleaned data
 python scripts/check_motion_collisions.py --robot g1_23dof --clean
 python scripts/check_motion_collisions.py --robot g1 --clean
+python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
 ```
 
 Checks self-collision statistics for ACCAD motion data. The `--clean` flag removes collision frames and saves a cleaned pkl file. Use `--show` for visual playback with MuJoCo viewer (enable contacts via viewer menu → Rendering → Contacts).
 
-## 23-DOF Specifics
+## Robot-Specific Details
 
-### Motion Data Remapping
+### Config Constants
 
-The 23-DOF variant uses `motion_dof_indices` to extract 11 upper-body DOFs from 29-DOF motion data:
+Each robot config defines module-level constants:
 
 ```python
-MOTION_DOF_INDICES_23DOF = (12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26)
+# G1 29-DOF and X2: full 14-DOF arm indices
+MOTION_DOF_INDICES = (15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28)
+
+# G1 23-DOF: 10-DOF subset (no wrist pitch/yaw)
+MOTION_DOF_INDICES_23DOF = (15, 16, 17, 18, 19, 22, 23, 24, 25, 26)
 ```
 
-### Key Differences from 29-DOF
+All configs also define `LOWER_BODY_JOINT_NAMES`, `LOWER_BODY_JOINT_PATTERNS`, and `LOWER_BODY_JOINT_CFG` for reward restrictions.
 
-| Aspect | 29-DOF | 23-DOF |
-|--------|--------|--------|
-| Upper-body DOFs | 17 | 11 |
-| Wrist bodies | `wrist_yaw_link` | `wrist_roll_rubber_hand` |
-| Motion data | `accad_all.pkl` | `accad_all_g1_23dof_clean.pkl` |
-| Gain presets | `G1_GAIN_PRESETS` | `G1_23DOF_GAIN_PRESETS` |
-| Symmetry | `G1Symmetry` | `G1_23DOFSymmetry` |
-| Runner | `LocomanipulationOnPolicyRunner` | `G1_23DOF_LocomanipulationOnPolicyRunner` |
+### Key Differences
+
+| Aspect | G1 29-DOF | G1 23-DOF | Agibot X2 |
+|--------|-----------|-----------|-----------|
+| Nominal height | 0.76m | 0.76m | 0.66m |
+| Upper-body DOFs | 14 (7/arm) | 10 (5/arm) | 14 (7/arm) |
+| Wrist bodies | `wrist_yaw_link` | `wrist_roll_rubber_hand` | `wrist_yaw_link` |
+| Motion data | `accad_all.pkl` | `accad_all_g1_23dof_clean.pkl` | `amass_all.pkl` |
+| Height postures | `postures.py` | `postures.py` | `postures_x2.py` |
+| Gain presets | `G1_GAIN_PRESETS` | `G1_23DOF_GAIN_PRESETS` | Hardcoded |
+| Symmetry | `G1Symmetry` | `G1_23DOFSymmetry` | `X2Symmetry` |
+| Waist DOFs | yaw/roll/pitch | yaw only | yaw/pitch/roll |
+| Wrist DOFs | roll/pitch/yaw | roll only | yaw/pitch/roll |
+| Foot geoms | 7/foot | 7/foot | 12/foot |
 
 ### Gain Presets
 
 ```python
-G1_23DOF_GAIN_PRESETS = {
+# G1 29-DOF and 23-DOF share the same preset structure:
+G1_GAIN_PRESETS = {
     "default": {...},
     "unitree": {...},
     "unitree_stiff": {...},  # Used by default in configs
 }
 ```
+
+X2 uses hardcoded gains (no presets).
 
 ## Key Files Reference
 
@@ -378,11 +409,13 @@ G1_23DOF_GAIN_PRESETS = {
 | `src/tasks/locomanipulation/locomanipulation_env_cfg.py` | Base config factory |
 | `src/tasks/locomanipulation/config/g1/env_cfgs.py` | G1 29-DOF config |
 | `src/tasks/locomanipulation/config/g1_23dof/env_cfgs.py` | G1 23-DOF config |
+| `src/tasks/locomanipulation/config/x2/env_cfgs.py` | Agibot X2 config |
 | `src/tasks/locomanipulation/mdp/events.py` | HandForceEvent + MaxForceEstimator |
 | `src/tasks/locomanipulation/mdp/rewards.py` | All reward functions |
 | `src/tasks/locomanipulation/mdp/symmetry.py` | Symmetry augmentation |
-| `src/tasks/locomanipulation/mdp/upper_body_action.py` | ACCAD motion playback |
+| `src/tasks/locomanipulation/mdp/upper_body_action.py` | Motion playback |
 | `src/tasks/locomanipulation/mdp/height_command.py` | Base height command |
+| `src/tasks/locomanipulation/mdp/waist_yaw_command.py` | Waist yaw command |
 | `src/tasks/locomanipulation/rl/runner.py` | OnPolicy runners with ONNX export |
 | `scripts/train.py` | Training script |
 | `scripts/play.py` | Visualization script |
