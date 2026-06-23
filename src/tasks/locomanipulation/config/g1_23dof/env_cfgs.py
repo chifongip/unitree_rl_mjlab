@@ -125,7 +125,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     default_pose_ratio=1.0,
     waist_yaw_only=True,
     exclude_waist=True,
-    pose_only=True,
+    pose_only=False,
   )
 
   cfg.viewer.body_name = "torso_link"
@@ -151,14 +151,14 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     mode="step",
     params={
       "force_range_max": {
-        "x": (-40.0, 40.0),
-        "y": (-40.0, 40.0),
-        "z": (-50.0, 5.0),
+        "x": (0.0, 0.0),
+        "y": (0.0, 0.0),
+        "z": (-40.0, 0.0),
       },
       "force_scale": 0.0,
       "torque_range": (0.0, 0.0),
       "duration_s": (3.0, 5.0),
-      "no_force_ratio": 0.05,
+      "no_force_ratio": 0.3,
       "body_point_offset_range": {
         "x": (-0.05, 0.05),
         "y": (-0.05, 0.05),
@@ -187,11 +187,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       "event_name": "hand_force",
       "stages": [
         {"step": 0, "scale": 0.0},
-        {"step": 2000 * 24, "scale": 0.2},
-        {"step": 4500 * 24, "scale": 0.4},
-        {"step": 7500 * 24, "scale": 0.6},
-        {"step": 11000 * 24, "scale": 0.8},
-        {"step": 15000 * 24, "scale": 1.0},
+        {"step": 1000 * 24, "scale": 0.2},
+        {"step": 2000 * 24, "scale": 0.4},
+        {"step": 3000 * 24, "scale": 0.6},
+        {"step": 4000 * 24, "scale": 0.8},
+        {"step": 5000 * 24, "scale": 1.0},
       ],
     },
   )
@@ -201,11 +201,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       "action_name": "upper_body_motion",
       "stages": [
         {"step": 0, "ratio": 1.0},
-        {"step": 2000 * 24, "ratio": 0.8},
-        {"step": 4500 * 24, "ratio": 0.6},
-        {"step": 7500 * 24, "ratio": 0.4},
-        {"step": 11000 * 24, "ratio": 0.2},
-        {"step": 15000 * 24, "ratio": 0.05},
+        {"step": 1000 * 24, "ratio": 0.8},
+        {"step": 2000 * 24, "ratio": 0.6},
+        {"step": 3000 * 24, "ratio": 0.4},
+        {"step": 4000 * 24, "ratio": 0.2},
+        {"step": 5000 * 24, "ratio": 0.05},
       ],
     },
   )
@@ -215,11 +215,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       "command_name": "base_height",
       "stages": [
         {"step": 0, "scale": 0.0},
-        {"step": 2000 * 24, "scale": 0.2},
-        {"step": 4500 * 24, "scale": 0.4},
-        {"step": 7500 * 24, "scale": 0.6},
-        {"step": 11000 * 24, "scale": 0.8},
-        {"step": 15000 * 24, "scale": 1.0},
+        {"step": 1000 * 24, "scale": 0.2},
+        {"step": 2000 * 24, "scale": 0.4},
+        {"step": 3000 * 24, "scale": 0.6},
+        {"step": 4000 * 24, "scale": 0.8},
+        {"step": 5000 * 24, "scale": 1.0},
       ],
     },
   )
@@ -231,11 +231,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
       "command_name": "waist_yaw",
       "stages": [
         {"step": 0, "scale": 0.0},
-        {"step": 2000 * 24, "scale": 0.2},
-        {"step": 4500 * 24, "scale": 0.4},
-        {"step": 7500 * 24, "scale": 0.6},
-        {"step": 11000 * 24, "scale": 0.8},
-        {"step": 15000 * 24, "scale": 1.0},
+        {"step": 1000 * 24, "scale": 0.2},
+        {"step": 2000 * 24, "scale": 0.4},
+        {"step": 3000 * 24, "scale": 0.6},
+        {"step": 4000 * 24, "scale": 0.8},
+        {"step": 5000 * 24, "scale": 1.0},
       ],
     },
   )
