@@ -16,8 +16,11 @@ from tensordict import TensorDict
 from src.tasks.locomanipulation.mdp.symmetry import (
   G1Symmetry,
   G1_23DOFSymmetry,
+  X2Symmetry,
   _JOINT_SWAP_PARTNERS,
   _JOINT_SWAP_PARTNERS_23DOF,
+  _X2_JOINT_SWAP_PARTNERS,
+  _X2_SIGN_FLIP_JOINTS,
   _NegateIndices,
   _SIGN_FLIP_JOINTS,
   _SIGN_FLIP_JOINTS_23DOF,
@@ -27,6 +30,7 @@ from src.tasks.locomanipulation.mdp.symmetry import (
   _SwapWristForces,
   g1_locomanipulation_symmetry,
   g1_23dof_locomanipulation_symmetry,
+  x2_locomanipulation_symmetry,
 )
 
 
@@ -864,3 +868,379 @@ class TestHistoryFullObsMirror23DOF:
     mirrored = sym.mirror_obs(obs, "actor")
     double_mirrored = sym.mirror_obs(mirrored, "actor")
     assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+
+# ── X2 observation layout (29-DOF) ─────────────────────────────────────────
+
+_ACTOR_TERMS_X2 = list(_ACTOR_TERMS)
+_ACTOR_DIMS_X2 = [3, 3, 3, 1, 1, 2, 29, 29, 15]  # total = 86
+
+_CRITIC_TERMS_X2 = _ACTOR_TERMS_X2 + list(_CRITIC_EXTRA_TERMS)
+_CRITIC_DIMS_X2 = _ACTOR_DIMS_X2 + list(_CRITIC_EXTRA_DIMS)  # total = 108
+
+# X2 31-joint names for sign-flip verification.
+_X2_JOINT_NAMES = [
+  "left_hip_pitch", "left_hip_roll", "left_hip_yaw", "left_knee",
+  "left_ankle_pitch", "left_ankle_roll",
+  "right_hip_pitch", "right_hip_roll", "right_hip_yaw", "right_knee",
+  "right_ankle_pitch", "right_ankle_roll",
+  "waist_yaw", "waist_pitch", "waist_roll",
+  "left_shoulder_pitch", "left_shoulder_roll", "left_shoulder_yaw",
+  "left_elbow", "left_wrist_yaw", "left_wrist_pitch", "left_wrist_roll",
+  "right_shoulder_pitch", "right_shoulder_roll", "right_shoulder_yaw",
+  "right_elbow", "right_wrist_yaw", "right_wrist_pitch", "right_wrist_roll",
+]
+
+
+def _make_mock_env_x2() -> _MockEnv:
+  actor_cfg = _MockGroupCfg({t: _MockTermCfg() for t in _ACTOR_TERMS_X2})
+  critic_cfg = _MockGroupCfg({t: _MockTermCfg() for t in _CRITIC_TERMS_X2})
+  obs_mgr = _MockObsManager(
+    group_term_names={"actor": list(_ACTOR_TERMS_X2), "critic": list(_CRITIC_TERMS_X2)},
+    group_term_dims={"actor": list(_ACTOR_DIMS_X2), "critic": list(_CRITIC_DIMS_X2)},
+    group_cfgs={"actor": actor_cfg, "critic": critic_cfg},
+  )
+  return _MockEnv(obs_mgr)
+
+
+def _make_symmetry_x2() -> X2Symmetry:
+  return X2Symmetry(_make_mock_env_x2())
+
+
+def _make_actor_obs_x2(batch: int = 4) -> torch.Tensor:
+  return torch.randn(batch, sum(_ACTOR_DIMS_X2))
+
+
+def _make_critic_obs_x2(batch: int = 4) -> torch.Tensor:
+  return torch.randn(batch, sum(_CRITIC_DIMS_X2))
+
+
+def _make_actions_x2(batch: int = 4) -> torch.Tensor:
+  return torch.randn(batch, 15)
+
+
+def _make_obs_td_x2(batch: int = 4) -> TensorDict:
+  return TensorDict(
+    {"actor": _make_actor_obs_x2(batch), "critic": _make_critic_obs_x2(batch)},
+    batch_size=[batch],
+  )
+
+
+# ── Tests: X2 joint swap and sign mask ─────────────────────────────────────
+
+class TestJointSwapAndSignX2:
+  def test_swap_partners_symmetric(self):
+    for src, dst in _X2_JOINT_SWAP_PARTNERS.items():
+      assert _X2_JOINT_SWAP_PARTNERS[dst] == src, f"({src}, {dst}) not symmetric"
+
+  def test_all_29_joints_covered(self):
+    assert set(_X2_JOINT_SWAP_PARTNERS.keys()) == set(range(29))
+
+  def test_midline_identity(self):
+    for j in (12, 13, 14):
+      assert _X2_JOINT_SWAP_PARTNERS[j] == j
+
+  def test_sign_flip_contains_roll_yaw_only(self):
+    for idx, name in enumerate(_X2_JOINT_NAMES):
+      parts = name.split("_")
+      suffix = "_".join(parts[1:]) if parts[0] in ("left", "right") else name
+      should_flip = any(s in suffix for s in ("roll", "yaw"))
+      assert (idx in _X2_SIGN_FLIP_JOINTS) == should_flip, (
+        f"Joint {idx} ({name}): expected flip={should_flip}, got {idx in _X2_SIGN_FLIP_JOINTS}"
+      )
+
+  def test_arm_swap_offset_7(self):
+    """Left arm (15-21) should swap with right arm (22-28), offset of 7."""
+    for i in range(15, 22):
+      assert _X2_JOINT_SWAP_PARTNERS[i] == i + 7
+      assert _X2_JOINT_SWAP_PARTNERS[i + 7] == i
+
+
+# ── Tests: X2 action mirroring ─────────────────────────────────────────────
+
+class TestActionMirrorX2:
+  def test_swap_left_right(self):
+    sym = _make_symmetry_x2()
+    actions = torch.zeros(1, 15)
+    actions[0, :6] = torch.arange(6, dtype=torch.float)
+    actions[0, 6:12] = torch.arange(6, 12, dtype=torch.float)
+    mirrored = sym.mirror_actions(actions)
+    for i in range(6):
+      j = i + 6
+      expected = actions[0, j].item()
+      if i in _X2_SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, i].item() == pytest.approx(expected)
+
+  def test_waist_joints_mirrored(self):
+    """Waist yaw (12) and roll (14) negated; pitch (13) unchanged."""
+    sym = _make_symmetry_x2()
+    actions = torch.zeros(1, 15)
+    actions[0, 12] = 0.5   # waist_yaw — negate
+    actions[0, 13] = 0.3   # waist_pitch — unchanged
+    actions[0, 14] = 0.1   # waist_roll — negate
+    mirrored = sym.mirror_actions(actions)
+    assert mirrored[0, 12].item() == pytest.approx(-0.5)
+    assert mirrored[0, 13].item() == pytest.approx(0.3)
+    assert mirrored[0, 14].item() == pytest.approx(-0.1)
+
+  def test_double_mirror_identity(self):
+    sym = _make_symmetry_x2()
+    actions = _make_actions_x2(batch=8)
+    mirrored = sym.mirror_actions(actions)
+    double_mirrored = sym.mirror_actions(mirrored)
+    assert torch.allclose(actions, double_mirrored, atol=1e-6)
+
+
+# ── Tests: X2 observation mirroring ────────────────────────────────────────
+
+class TestObsMirrorX2:
+  def test_actor_obs_shape_preserved(self):
+    sym = _make_symmetry_x2()
+    obs = _make_actor_obs_x2(batch=4)
+    mirrored = sym.mirror_obs(obs, "actor")
+    assert mirrored.shape == obs.shape
+
+  def test_critic_obs_shape_preserved(self):
+    sym = _make_symmetry_x2()
+    obs = _make_critic_obs_x2(batch=4)
+    mirrored = sym.mirror_obs(obs, "critic")
+    assert mirrored.shape == obs.shape
+
+  def test_joint_pos_segment_swap(self):
+    sym = _make_symmetry_x2()
+    obs = torch.zeros(1, sum(_ACTOR_DIMS_X2))
+    jp_offset = 13  # base_ang_vel(3) + grav(3) + cmd(3) + height(1) + waist_yaw(1) + phase(2)
+    for i in range(6):
+      obs[0, jp_offset + i] = 100 + i
+      obs[0, jp_offset + 6 + i] = 200 + i
+    for i in range(3):
+      obs[0, jp_offset + 12 + i] = 300 + i
+
+    mirrored = sym.mirror_obs(obs, "actor")
+
+    for i in range(6):
+      j = i + 6
+      expected = obs[0, jp_offset + j].item()
+      if i in _X2_SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, jp_offset + i].item() == pytest.approx(expected)
+
+    for i in range(3):
+      expected = obs[0, jp_offset + 12 + i].item()
+      if (12 + i) in _X2_SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, jp_offset + 12 + i].item() == pytest.approx(expected)
+
+  def test_double_mirror_actor_identity(self):
+    sym = _make_symmetry_x2()
+    obs = _make_actor_obs_x2(batch=8)
+    mirrored = sym.mirror_obs(obs, "actor")
+    double_mirrored = sym.mirror_obs(mirrored, "actor")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+  def test_double_mirror_critic_identity(self):
+    sym = _make_symmetry_x2()
+    obs = _make_critic_obs_x2(batch=8)
+    mirrored = sym.mirror_obs(obs, "critic")
+    double_mirrored = sym.mirror_obs(mirrored, "critic")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+
+# ── Tests: x2_locomanipulation_symmetry function ───────────────────────────
+
+class TestAugmentationFunctionX2:
+  def test_batch_doubling_obs_and_actions(self):
+    env = _make_mock_env_x2()
+    batch = 4
+    obs = _make_obs_td_x2(batch)
+    actions = _make_actions_x2(batch)
+    aug_obs, aug_actions = x2_locomanipulation_symmetry(env, obs, actions)
+    assert aug_obs is not None
+    assert aug_actions is not None
+    assert aug_obs.batch_size[0] == batch * 2
+    assert aug_actions.shape[0] == batch * 2
+
+  def test_batch_doubling_obs_only(self):
+    env = _make_mock_env_x2()
+    batch = 4
+    obs = _make_obs_td_x2(batch)
+    aug_obs, aug_actions = x2_locomanipulation_symmetry(env, obs, None)
+    assert aug_obs is not None
+    assert aug_actions is None
+    assert aug_obs.batch_size[0] == batch * 2
+
+  def test_batch_doubling_actions_only(self):
+    env = _make_mock_env_x2()
+    batch = 4
+    actions = _make_actions_x2(batch)
+    aug_obs, aug_actions = x2_locomanipulation_symmetry(env, None, actions)
+    assert aug_obs is None
+    assert aug_actions is not None
+    assert aug_actions.shape[0] == batch * 2
+
+  def test_original_preserved_in_first_half(self):
+    env = _make_mock_env_x2()
+    batch = 4
+    obs = _make_obs_td_x2(batch)
+    actions = _make_actions_x2(batch)
+    aug_obs, aug_actions = x2_locomanipulation_symmetry(env, obs, actions)
+    assert torch.allclose(aug_actions[:batch], actions, atol=1e-6)
+    for key in obs.keys():
+      assert torch.allclose(aug_obs[key][:batch], obs[key], atol=1e-6)
+
+  def test_mirrored_differs_from_original(self):
+    env = _make_mock_env_x2()
+    batch = 4
+    obs = _make_obs_td_x2(batch)
+    actions = _make_actions_x2(batch)
+    aug_obs, aug_actions = x2_locomanipulation_symmetry(env, obs, actions)
+    assert not torch.allclose(aug_actions[:batch], aug_actions[batch:], atol=1e-6)
+
+  def test_double_augment_identity(self):
+    env = _make_mock_env_x2()
+    batch = 4
+    obs = _make_obs_td_x2(batch)
+    actions = _make_actions_x2(batch)
+    aug_obs, aug_actions = x2_locomanipulation_symmetry(env, obs, actions)
+    aug_obs2, aug_actions2 = x2_locomanipulation_symmetry(env, aug_obs, aug_actions)
+    for key in obs.keys():
+      assert torch.allclose(aug_obs2[key][:batch], obs[key], atol=1e-6)
+    assert torch.allclose(aug_actions2[:batch], actions, atol=1e-6)
+
+
+# ── Tests: X2 history-aware mirroring ──────────────────────────────────────
+
+def _make_mock_env_with_history_x2() -> _MockEnv:
+  actor_cfg = _MockGroupCfg(
+    {t: _MockTermCfg() for t in _ACTOR_TERMS_X2}, history_length=_HISTORY_LEN
+  )
+  critic_cfg = _MockGroupCfg(
+    {t: _MockTermCfg() for t in _CRITIC_TERMS_X2}, history_length=_HISTORY_LEN
+  )
+  obs_mgr = _MockObsManager(
+    group_term_names={"actor": list(_ACTOR_TERMS_X2), "critic": list(_CRITIC_TERMS_X2)},
+    group_term_dims={
+      "actor": [d * _HISTORY_LEN for d in _ACTOR_DIMS_X2],
+      "critic": [d * _HISTORY_LEN for d in _CRITIC_DIMS_X2],
+    },
+    group_cfgs={"actor": actor_cfg, "critic": critic_cfg},
+  )
+  return _MockEnv(obs_mgr)
+
+
+class TestHistorySwapAndFlipJointsX2:
+  def test_swap_all_frames(self):
+    """Joint swap+flip should apply independently to each history frame (X2)."""
+    m = _SwapAndFlipJoints(29, _X2_JOINT_SWAP_PARTNERS, _X2_SIGN_FLIP_JOINTS)
+    # Use 12 leg joints (indices 0-11) for a compact test; rest zeroed.
+    # 2 history frames, 29 joints each.
+    x = torch.zeros(1, 29 * 2)
+    # Frame 0: left leg = [10..15], right leg = [16..21]
+    for i in range(6):
+      x[0, i] = 10 + i
+      x[0, 6 + i] = 16 + i
+    # Frame 1: left leg = [30..35], right leg = [36..41]
+    for i in range(6):
+      x[0, 29 + i] = 30 + i
+      x[0, 29 + 6 + i] = 36 + i
+
+    m.apply(x, None, history_length=2)
+
+    # Frame 0: left gets right values (sign-flipped for roll/yaw at 1,2,5)
+    for i in range(6):
+      j = 6 + i
+      expected = x[0, j].item() if j not in _X2_SIGN_FLIP_JOINTS else -x[0, j].item()
+      # After apply, x[0, j] was overwritten; check against original right values.
+    # Reconstruct expected from original values.
+    orig_right_0 = [16, 17, 18, 19, 20, 21]
+    orig_left_0 = [10, 11, 12, 13, 14, 15]
+    for i in range(6):
+      expected_left = orig_right_0[i]
+      if i in _X2_SIGN_FLIP_JOINTS:
+        expected_left = -expected_left
+      assert x[0, i].item() == pytest.approx(expected_left), f"frame0 left[{i}]"
+    for i in range(6):
+      expected_right = orig_left_0[i]
+      if (6 + i) in _X2_SIGN_FLIP_JOINTS:
+        expected_right = -expected_right
+      assert x[0, 6 + i].item() == pytest.approx(expected_right), f"frame0 right[{i}]"
+
+    # Frame 1
+    orig_right_1 = [36, 37, 38, 39, 40, 41]
+    orig_left_1 = [30, 31, 32, 33, 34, 35]
+    for i in range(6):
+      expected_left = orig_right_1[i]
+      if i in _X2_SIGN_FLIP_JOINTS:
+        expected_left = -expected_left
+      assert x[0, 29 + i].item() == pytest.approx(expected_left), f"frame1 left[{i}]"
+    for i in range(6):
+      expected_right = orig_left_1[i]
+      if (6 + i) in _X2_SIGN_FLIP_JOINTS:
+        expected_right = -expected_right
+      assert x[0, 29 + 6 + i].item() == pytest.approx(expected_right), f"frame1 right[{i}]"
+
+  def test_double_mirror_identity_with_history(self):
+    m = _SwapAndFlipJoints(29, _X2_JOINT_SWAP_PARTNERS, _X2_SIGN_FLIP_JOINTS)
+    x = torch.randn(4, 29 * _HISTORY_LEN)
+    orig = x.clone()
+    m.apply(x, None, history_length=_HISTORY_LEN)
+    m.apply(x, None, history_length=_HISTORY_LEN)
+    assert torch.allclose(x, orig, atol=1e-6)
+
+
+class TestHistoryFullObsMirrorX2:
+  def test_actor_obs_shape_preserved_with_history(self):
+    sym = X2Symmetry(_make_mock_env_with_history_x2())
+    obs = torch.randn(4, sum(d * _HISTORY_LEN for d in _ACTOR_DIMS_X2))
+    mirrored = sym.mirror_obs(obs, "actor")
+    assert mirrored.shape == obs.shape
+
+  def test_double_mirror_identity_with_history(self):
+    sym = X2Symmetry(_make_mock_env_with_history_x2())
+    obs = torch.randn(4, sum(d * _HISTORY_LEN for d in _ACTOR_DIMS_X2))
+    mirrored = sym.mirror_obs(obs, "actor")
+    double_mirrored = sym.mirror_obs(mirrored, "actor")
+    assert torch.allclose(obs, double_mirrored, atol=1e-6)
+
+  def test_joint_swap_per_frame(self):
+    """Verify joint_pos segment is swapped independently per history frame (X2)."""
+    sym = X2Symmetry(_make_mock_env_with_history_x2())
+    total_dim = sum(d * _HISTORY_LEN for d in _ACTOR_DIMS_X2)
+    obs = torch.zeros(1, total_dim)
+
+    # joint_pos offset in flattened obs: (3+3+3+1+1+2) * 4 = 52
+    jp_offset = sum(_ACTOR_DIMS_X2[:6]) * _HISTORY_LEN  # 13 * 4 = 52
+    feature_dim = 29
+
+    # Set frame 0 left leg joints to 100+idx, right leg to 200+idx.
+    for i in range(6):
+      obs[0, jp_offset + i] = 100 + i
+      obs[0, jp_offset + 6 + i] = 200 + i
+    # Set frame 1 left leg joints to 300+idx, right leg to 400+idx.
+    f1 = jp_offset + feature_dim
+    for i in range(6):
+      obs[0, f1 + i] = 300 + i
+      obs[0, f1 + 6 + i] = 400 + i
+
+    mirrored = sym.mirror_obs(obs, "actor")
+
+    # Check frame 0 swap.
+    for i in range(6):
+      j = i + 6
+      expected = obs[0, jp_offset + j].item()
+      if i in _X2_SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, jp_offset + i].item() == pytest.approx(expected), (
+        f"frame0 joint_pos[{i}]"
+      )
+
+    # Check frame 1 swap.
+    for i in range(6):
+      j = i + 6
+      expected = obs[0, f1 + j].item()
+      if i in _X2_SIGN_FLIP_JOINTS:
+        expected = -expected
+      assert mirrored[0, f1 + i].item() == pytest.approx(expected), (
+        f"frame1 joint_pos[{i}]"
+      )

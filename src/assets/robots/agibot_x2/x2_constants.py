@@ -14,7 +14,7 @@ from mjlab.utils.spec_config import CollisionCfg
 ##
 
 X2_XML: Path = (
-  SRC_PATH / "assets" / "robots" / "agibot_x2" / "xmls" / "x2_ultra.xml"
+  SRC_PATH / "assets" / "robots" / "agibot_x2" / "xmls" / "x2_ultra_no_head.xml"
 )
 assert X2_XML.exists()
 
@@ -47,8 +47,6 @@ X2_ACTUATOR_CFGS: dict[str, tuple[float, float, float, float]] = {
   ".*_wrist_yaw_joint": (24.0, 14.1, 1.7, 0.03),
   ".*_wrist_pitch_joint": (2.2, 1.3, 0.15, 0.03),
   ".*_wrist_roll_joint": (2.2, 1.3, 0.15, 0.03),
-  "head_yaw_joint": (2.6, 1.5, 0.18, 0.03),
-  "head_pitch_joint": (0.6, 0.35, 0.04, 0.03),
 }
 
 

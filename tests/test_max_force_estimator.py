@@ -691,6 +691,108 @@ def test_g1_23dof_play_mode_pose_force_bounds():
         f"{ee_name} axis {axis}: f_min should be -f_max (symmetric effort)"
 
 
+def test_x2_play_mode_pose_force_bounds():
+  """Compute max forces for X2 at the play-mode pose (all upper body joints = 0).
+
+  Uses the real MuJoCo model to compute the Jacobian, then applies the same
+  algorithm as MaxForceEstimator. Prints results for inspection.
+  """
+  import mujoco
+
+  from src.assets.robots.agibot_x2.x2_constants import get_spec
+
+  spec = get_spec()
+  model = spec.compile()
+  data = mujoco.MjData(model)
+  mujoco.mj_resetDataKeyframe(model, data, 0)
+
+  # Set all joint positions to zero (play mode pose).
+  for i in range(model.njnt):
+    jnt = model.joint(i)
+    if jnt.type[0] != mujoco.mjtJoint.mjJNT_FREE:
+      qadr = jnt.qposadr[0]
+      data.qpos[qadr] = 0.0
+
+  # Set floating base height.
+  data.qpos[2] = 0.68
+
+  mujoco.mj_forward(model, data)
+
+  # Find wrist body IDs.
+  left_wrist_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_wrist_yaw_link")
+  right_wrist_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_wrist_yaw_link")
+  assert left_wrist_id >= 0, "left_wrist_yaw_link not found"
+  assert right_wrist_id >= 0, "right_wrist_yaw_link not found"
+
+  # Find arm joint DOF addresses (14 arm joints, X2 order).
+  arm_joint_patterns = [
+    "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
+    "left_elbow_joint", "left_wrist_yaw_joint", "left_wrist_pitch_joint", "left_wrist_roll_joint",
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
+    "right_elbow_joint", "right_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_roll_joint",
+  ]
+  arm_dof_adr = []
+  for name in arm_joint_patterns:
+    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+    assert jid >= 0, f"Joint {name} not found"
+    arm_dof_adr.append(model.jnt_dofadr[jid])
+
+  # Get effort limits from MuJoCo actuator ctrlrange (X2 uses motor actuators).
+  effort_limits = {}
+  for name in arm_joint_patterns:
+    aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"motor_{name}")
+    assert aid >= 0, f"Actuator motor_{name} not found"
+    effort_limits[name] = float(model.actuator_ctrlrange[aid, 1])
+
+  eps = 1e-2
+
+  results = {}
+  for ee_name, body_id in [("left_wrist", left_wrist_id), ("right_wrist", right_wrist_id)]:
+    # Compute Jacobian at body CoM.
+    jacp = np.zeros((3, model.nv))
+    jacr = np.zeros((3, model.nv))
+    body_com = data.xipos[body_id]
+    mujoco.mj_jacBody(model, data, jacp, jacr, body_id)
+
+    # Slice arm DOF columns.
+    jacp_arm = jacp[:, arm_dof_adr]
+
+    # Compute force bounds per joint, per axis.
+    f_max_all = np.zeros((3, len(arm_dof_adr)))
+    f_min_all = np.zeros((3, len(arm_dof_adr)))
+    for i, (dof_adr, jname) in enumerate(zip(arm_dof_adr, arm_joint_patterns)):
+      el = effort_limits[jname]
+      for axis in range(3):
+        j_val = abs(jacp_arm[axis, i])
+        f_max_all[axis, i] = el / (j_val + eps)
+        f_min_all[axis, i] = -el / (j_val + eps)
+
+    # Most restrictive across joints.
+    f_max = f_max_all.min(axis=1)
+    f_min = f_min_all.max(axis=1)
+
+    results[ee_name] = {
+      "f_min": f_min.tolist(),
+      "f_max": f_max.tolist(),
+      "body_com": body_com.tolist(),
+    }
+
+  # Print results.
+  import json
+  print("\n=== X2 Play Mode Pose — Max Force Bounds ===")
+  print(json.dumps(results, indent=2))
+
+  # Basic sanity checks.
+  for ee_name, r in results.items():
+    f_max = r["f_max"]
+    f_min = r["f_min"]
+    for axis in range(3):
+      assert f_max[axis] > 0, f"{ee_name} axis {axis}: f_max should be positive"
+      assert f_min[axis] < 0, f"{ee_name} axis {axis}: f_min should be negative"
+      assert abs(f_min[axis]) == pytest.approx(f_max[axis], rel=1e-3), \
+        f"{ee_name} axis {axis}: f_min should be -f_max (symmetric effort)"
+
+
 if __name__ == "__main__":
   import pytest
   pytest.main([__file__, "-v"])

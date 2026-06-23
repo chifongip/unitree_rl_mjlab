@@ -1,34 +1,34 @@
-"""Check self-collision statistics for motion data on the G1 robot.
+"""Check self-collision statistics for motion data.
 
-Loads the ACCAD motion dataset, optionally remaps to 23-DOF, and runs MuJoCo
-collision detection to count how many frames produce self-collisions.
+Loads motion data (pkl) and runs MuJoCo collision detection to count how many
+frames produce self-collisions. Unnamed geoms fall back to parent body names.
+
+Robots: g1_23dof (default), g1, x2.
 
 Usage:
-    # 23-DOF (default) — headless scan
-    python scripts/check_motion_collisions.py
+    python scripts/check_motion_collisions.py --robot <robot> --motion-file <path> [options]
 
-    # 29-DOF — headless scan
-    python scripts/check_motion_collisions.py --robot g1
+Options:
+    --robot         Robot variant (default: g1_23dof)
+    --motion-file   Path to motion pkl (default: G1 ACCAD data)
+    --show          Open MuJoCo viewer for visual playback
+    --clip <str>    Filter to clips containing this substring
+    --collision-only  Only show collision frames (with --show)
+    --clean         Remove collision frames and save cleaned data
+
+Examples:
+    # Headless scan
+    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl
 
     # Visual playback
-    python scripts/check_motion_collisions.py --show
-    python scripts/check_motion_collisions.py --robot g1 --show
+    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --show
 
-    # Specific clip
-    python scripts/check_motion_collisions.py --show --clip "walk turn right"
-
-    # Only collision frames
-    python scripts/check_motion_collisions.py --show --collision-only
-
-    # Remove collision frames and save cleaned data
-    python scripts/check_motion_collisions.py --clean
-    python scripts/check_motion_collisions.py --robot g1 --clean
-
-    # Verify cleaned data has no collisions
-    python scripts/check_motion_collisions.py --motion-file src/assets/data/g1/accad_all_23dof_clean.pkl
+    # Clean and save
+    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
 """
 
 import argparse
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,13 +41,14 @@ import numpy as np
 
 @dataclass
 class RobotConfig:
-    """Configuration for a G1 robot variant."""
+    """Configuration for a robot variant."""
     name: str
     joint_names: list[str]
-    # Indices into the 29-DOF motion data to extract this robot's DOFs.
-    # None means use all columns directly (29-DOF).
+    # Indices into the motion data DOF array to extract this robot's DOFs.
+    # None means use all columns directly.
     motion_dof_indices: tuple[int, ...] | None = None
     spec_fn: object = None  # Callable -> MjSpec
+    default_height: float = 0.785  # Pelvis height for standing pose.
 
 
 def _make_g1_23dof_config() -> RobotConfig:
@@ -92,16 +93,45 @@ def _make_g1_config() -> RobotConfig:
     )
 
 
+def _make_x2_config() -> RobotConfig:
+    from src.assets.robots.agibot_x2.x2_constants import get_spec
+    # Motion data (29 DOF) is already in X2 joint order:
+    #   0-11: leg, 12-14: waist (yaw/pitch/roll), 15-21: L arm, 22-28: R arm.
+    return RobotConfig(
+        name="x2",
+        joint_names=[
+            "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+            "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+            "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+            "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+            "waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint",
+            "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
+            "left_shoulder_yaw_joint", "left_elbow_joint",
+            "left_wrist_yaw_joint", "left_wrist_pitch_joint", "left_wrist_roll_joint",
+            "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
+            "right_shoulder_yaw_joint", "right_elbow_joint",
+            "right_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_roll_joint",
+        ],
+        motion_dof_indices=None,
+        spec_fn=get_spec,
+        default_height=0.68,
+    )
+
+
 ROBOT_CONFIGS = {
     "g1_23dof": _make_g1_23dof_config,
     "g1": _make_g1_config,
+    "x2": _make_x2_config,
 }
 
 # Default lower-body pose from HOME_KEYFRAME (same for both robots).
 DEFAULT_LOWER_BODY = {
     "left_hip_pitch_joint": -0.1, "right_hip_pitch_joint": -0.1,
+    "left_hip_roll_joint": 0.0, "right_hip_roll_joint": 0.0,
+    "left_hip_yaw_joint": 0.0, "right_hip_yaw_joint": 0.0,
     "left_knee_joint": 0.3, "right_knee_joint": 0.3,
     "left_ankle_pitch_joint": -0.2, "right_ankle_pitch_joint": -0.2,
+    "left_ankle_roll_joint": 0.0, "right_ankle_roll_joint": 0.0,
 }
 
 MOTION_FILE = Path(__file__).resolve().parent.parent / "src" / "assets" / "data" / "g1" / "accad_all.pkl"
@@ -116,12 +146,13 @@ def build_qpos_index(model, joint_names: list[str]):
     return idx
 
 
-def set_frame(data, qpos_idx, joint_names: list[str], lower_body_dof, upper_body_dof):
+def set_frame(data, qpos_idx, joint_names: list[str], lower_body_dof, upper_body_dof,
+              default_height: float = 0.785):
     """Set the robot's qpos for one frame of motion data."""
     # Floating base: position + identity quaternion.
     data.qpos[0] = 0.0
     data.qpos[1] = 0.0
-    data.qpos[2] = 0.785
+    data.qpos[2] = default_height
     data.qpos[3] = 1.0  # quat w
     data.qpos[4] = 0.0
     data.qpos[5] = 0.0
@@ -151,16 +182,25 @@ def extract_dof(dof: np.ndarray, motion_dof_indices: tuple[int, ...] | None):
     return lower, upper
 
 
+def _geom_or_body_name(model, geom_id):
+    """Return geom name, or parent body name if geom is unnamed."""
+    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+    if name is None:
+        body_id = model.geom_bodyid[geom_id]
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+    return name
+
+
 def check_collision(model, data):
-    """Run FK + collision detection, return list of (geom1_name, geom2_name) pairs."""
+    """Run FK + collision detection, return list of (name1, name2) pairs."""
     mujoco.mj_forward(model, data)
     mujoco.mj_collision(model, data)
     pairs = []
     for i in range(data.ncon):
         c = data.contact[i]
-        g1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom1)
-        g2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2)
-        pairs.append((g1, g2))
+        n1 = _geom_or_body_name(model, c.geom1)
+        n2 = _geom_or_body_name(model, c.geom2)
+        pairs.append((n1, n2))
     return pairs
 
 
@@ -188,7 +228,8 @@ def run_headless(robot_cfg: RobotConfig, motion_file: Path, clean: bool = False)
         clip_clean = []
 
         for f in range(n_frames):
-            set_frame(data, qpos_idx, robot_cfg.joint_names, lower_body[f], upper_body[f])
+            set_frame(data, qpos_idx, robot_cfg.joint_names, lower_body[f], upper_body[f],
+                      default_height=robot_cfg.default_height)
             pairs = check_collision(model, data)
             if pairs:
                 clip_collision_frames += 1
@@ -246,10 +287,8 @@ def run_headless(robot_cfg: RobotConfig, motion_file: Path, clean: bool = False)
 def _body_part(geom_name: str) -> str:
     """Simplify a collision geom name to its body part."""
     g = geom_name.replace("_collision", "")
-    for part in ("foot1", "foot2", "foot3", "foot4", "foot5", "foot6", "foot7"):
-        if g.endswith(part):
-            g = g.rsplit(part, 1)[0] + "foot"
-            break
+    # Collapse footN suffixes (foot1..foot12) to "foot".
+    g = re.sub(r"foot\d+$", "foot", g)
     for prefix in ("left_", "right_"):
       if g.startswith(prefix):
         g = g[len(prefix):]
@@ -336,7 +375,8 @@ def run_show(args, robot_cfg: RobotConfig):
                 if not viewer.is_running():
                     return
 
-                set_frame(data, qpos_idx, robot_cfg.joint_names, lower_body[f], upper_body[f])
+                set_frame(data, qpos_idx, robot_cfg.joint_names, lower_body[f], upper_body[f],
+                          default_height=robot_cfg.default_height)
                 pairs = check_collision(model, data)
                 is_collision = len(pairs) > 0
 

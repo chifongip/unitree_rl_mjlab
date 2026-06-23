@@ -1,7 +1,9 @@
-"""Left-right symmetric data augmentation for G1 locomanipulation.
+"""Left-right symmetric data augmentation for locomanipulation.
 
 Mirrors observations and actions across the sagittal plane (x-z plane, flip y-axis)
 to double effective training data. Uses rsl_rl's built-in symmetry_cfg in PPO.
+
+Supports G1 29-DOF, G1 23-DOF, and X2 robots.
 
 Coordinate convention (MuJoCo body frame): x = forward, y = left, z = up.
 """
@@ -166,6 +168,60 @@ class G1_23DOFSymmetry(G1Symmetry):
 
     for term_name in group_cfg.terms:
       mirror = _get_term_mirror_23dof(term_name)
+      if mirror is not None:
+        plan.append(mirror)
+      else:
+        plan.append(_IdentityMirror())
+    return plan
+
+
+# X2 29-joint ordering (from MJCF x2_ultra_no_head.xml, excluding freejoint).
+# Indices 0-5: left leg, 6-11: right leg, 12-14: waist (yaw/pitch/roll),
+# 15-21: left arm (shoulder pitch/roll/yaw, elbow, wrist yaw/pitch/roll),
+# 22-28: right arm.
+_X2_JOINT_SWAP_PARTNERS = {
+  # Left leg <-> Right leg
+  0: 6, 1: 7, 2: 8, 3: 9, 4: 10, 5: 11,
+  6: 0, 7: 1, 8: 2, 9: 3, 10: 4, 11: 5,
+  # Left arm <-> Right arm (offset of 7: L starts at 15, R starts at 22)
+  15: 22, 16: 23, 17: 24, 18: 25, 19: 26, 20: 27, 21: 28,
+  22: 15, 23: 16, 24: 17, 25: 18, 26: 19, 27: 20, 28: 21,
+  # Waist (midline) — identity
+  12: 12, 13: 13, 14: 14,
+}
+
+_X2_SIGN_FLIP_JOINTS = {
+  # Roll joints
+  1, 7,     # hip_roll (L, R)
+  5, 11,    # ankle_roll (L, R)
+  14,       # waist_roll (index 14 for X2)
+  16, 23,   # shoulder_roll (L, R)
+  21, 28,   # wrist_roll (L, R)
+  # Yaw joints
+  2, 8,     # hip_yaw (L, R)
+  12,       # waist_yaw
+  17, 24,   # shoulder_yaw (L, R)
+  19, 26,   # wrist_yaw (L, R)
+}
+
+
+class X2Symmetry(G1Symmetry):
+  """Precomputes mirroring tensors for X2 locomanipulation observations and actions."""
+
+  _N_JOINTS = 29
+  _N_POLICY_JOINTS = 15  # 12 leg + 3 waist (yaw, pitch, roll)
+  _SWAP_PARTNERS = _X2_JOINT_SWAP_PARTNERS
+  _SIGN_FLIP = _X2_SIGN_FLIP_JOINTS
+
+  def _build_group_plan(self, group_name: str) -> list[_TermMirror]:
+    """Build a mirror plan using X2 term mirror rules."""
+    plan: list[_TermMirror] = []
+    group_cfg = self._obs_manager.cfg[group_name]
+    if group_cfg is None:
+      return plan
+
+    for term_name in group_cfg.terms:
+      mirror = _get_term_mirror_x2(term_name)
       if mirror is not None:
         plan.append(mirror)
       else:
@@ -364,6 +420,56 @@ def _get_term_mirror_23dof(term_name: str) -> _TermMirror | None:
   return None
 
 
+def _get_term_mirror_x2(term_name: str) -> _TermMirror | None:
+  """Return the mirror transform for an X2 observation term, or None for identity."""
+  # Simple sign-flip terms.
+  if term_name == "base_ang_vel":
+    return _NegateIndices((0, 2))
+  if term_name == "projected_gravity":
+    return _NegateIndices((1,))
+  if term_name == "command":
+    return _NegateIndices((1, 2))
+  if term_name == "phase":
+    return _NegateIndices((0, 1))
+  if term_name == "base_lin_vel":
+    return _NegateIndices((1,))
+
+  # Joint swap-and-flip terms (full 29-DOF).
+  if term_name in ("joint_pos", "joint_vel"):
+    return _SwapAndFlipJoints(29, _X2_JOINT_SWAP_PARTNERS, _X2_SIGN_FLIP_JOINTS)
+
+  # Action term (15-DOF: 12 leg + 3 waist).
+  if term_name == "actions":
+    return _SwapAndFlipJoints(15, {
+      k: v for k, v in _X2_JOINT_SWAP_PARTNERS.items() if k < 15
+    }, {j for j in _X2_SIGN_FLIP_JOINTS if j < 15})
+
+  # Waist yaw command — negate.
+  if term_name == "waist_yaw_command":
+    return _NegateIndices((0,))
+
+  # Foot terms (swap left/right).
+  if term_name in ("foot_height", "foot_air_time", "foot_contact"):
+    return _SwapFootValues()
+  if term_name == "foot_contact_forces":
+    return _SwapFootForces()
+  if term_name == "wrist_force":
+    return _SwapWristForces()
+
+  # Height scan — skip if unknown.
+  if term_name == "height_scan":
+    return None
+
+  # Base height terms — no mirroring.
+  if term_name == "base_height_command":
+    return None
+  if term_name == "base_height":
+    return None
+
+  # Unknown term — no mirroring (safe default).
+  return None
+
+
 # --- Module-level function for rsl_rl symmetry_cfg ---
 
 _g1_symmetry_cache: dict[int, G1Symmetry] = {}
@@ -401,6 +507,45 @@ def g1_locomanipulation_symmetry(
       else:
         mirrored_obs[group_name] = group_obs.clone()
     # torch.cat handles both TensorDict and plain dict.
+    aug_obs = torch.cat([obs, type(obs)(mirrored_obs, batch_size=obs.batch_size)], dim=0)
+
+  if actions is not None:
+    mirrored_actions = symmetry.mirror_actions(actions)
+    aug_actions = torch.cat([actions, mirrored_actions], dim=0)
+
+  return aug_obs, aug_actions
+
+
+# --- Module-level function for X2 rsl_rl symmetry_cfg ---
+
+_x2_symmetry_cache: dict[int, X2Symmetry] = {}
+
+
+def x2_locomanipulation_symmetry(
+  env: RslRlVecEnvWrapper,
+  obs: dict[str, torch.Tensor] | None,
+  actions: torch.Tensor | None,
+) -> tuple[dict[str, torch.Tensor] | None, torch.Tensor | None]:
+  """Left-right symmetry augmentation for X2 locomanipulation.
+
+  Called by rsl_rl PPO during update(). Returns (augmented_obs, augmented_actions)
+  where the first half is original and the second half is mirrored.
+  """
+  env_id = id(env)
+  if env_id not in _x2_symmetry_cache:
+    _x2_symmetry_cache[env_id] = X2Symmetry(env)
+  symmetry = _x2_symmetry_cache[env_id]
+
+  aug_obs = None
+  aug_actions = None
+
+  if obs is not None:
+    mirrored_obs = {}
+    for group_name, group_obs in obs.items():
+      if group_name in symmetry._group_mirror_plans:
+        mirrored_obs[group_name] = symmetry.mirror_obs(group_obs, group_name)
+      else:
+        mirrored_obs[group_name] = group_obs.clone()
     aug_obs = torch.cat([obs, type(obs)(mirrored_obs, batch_size=obs.batch_size)], dim=0)
 
   if actions is not None:

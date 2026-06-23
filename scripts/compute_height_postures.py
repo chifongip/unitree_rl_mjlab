@@ -1,17 +1,18 @@
 """Compute default lower-body joint postures for each commanded base height.
 
 Uses MuJoCo forward kinematics + scipy optimization to find joint angles
-that place the G1 pelvis at a target height with both feet on the ground
+that place the pelvis at a target height with both feet on the ground
 (z=0) and the torso upright.
 
 Usage:
-    python scripts/compute_height_postures.py                          # compute + print dict
-    python scripts/compute_height_postures.py --save scripts/postures.py   # compute + save to file
-    python scripts/compute_height_postures.py --show                   # also open MuJoCo viewer
-    python scripts/compute_height_postures.py --postures-file scripts/postures.py   # load + replay in viewer
+    python scripts/compute_height_postures.py --robot g1                  # G1, compute + print
+    python scripts/compute_height_postures.py --robot x2                  # X2, compute + print
+    python scripts/compute_height_postures.py --robot x2 --save postures.py   # compute + save
+    python scripts/compute_height_postures.py --robot x2 --show           # also open MuJoCo viewer
+    python scripts/compute_height_postures.py --postures-file postures.py # load + replay in viewer
 
-Output: a Python dict that can be saved to scripts/postures.py and imported
-by env_cfgs.py as the height_postures parameter for the variable_posture reward.
+Output: a Python dict that can be saved to a file and imported by env_cfgs.py
+as the height_postures parameter for the variable_posture reward.
 """
 
 import argparse
@@ -23,11 +24,55 @@ import mujoco.viewer
 import numpy as np
 from scipy.optimize import minimize
 
-# G1 29-DOF model.
-G1_XML = Path(__file__).resolve().parent.parent / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "g1.xml"
-ASSETS_DIR = G1_XML.parent / "assets"
+# ── Robot configurations ────────────────────────────────────────────────────
 
-# Lower-body joints to optimize (12 DOF).
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_SRC_DIR = _SCRIPT_DIR.parent / "src"
+
+# G1
+G1_XML = _SRC_DIR / "assets" / "robots" / "unitree_g1" / "xmls" / "g1.xml"
+G1_ASSETS_DIR = G1_XML.parent / "assets"
+G1_NOMINAL_HEIGHT = 0.76
+G1_TARGET_HEIGHTS = sorted(set(
+    [round(h, 2) for h in np.arange(0.50, 0.79, 0.02)] + [G1_NOMINAL_HEIGHT]
+))
+G1_FOOT_GEOM_COUNT = 7   # capsules
+G1_IS_CAPSULE = True
+G1_ALIGN_OFFSET = np.array([-0.05, 0.0])
+
+# X2
+X2_XML = _SRC_DIR / "assets" / "robots" / "agibot_x2" / "xmls" / "x2_ultra_no_head.xml"
+X2_ASSETS_DIR = X2_XML.parent / "assets"
+X2_NOMINAL_HEIGHT = 0.66
+X2_TARGET_HEIGHTS = sorted(set(
+    [round(h, 2) for h in np.arange(0.40, 0.67, 0.02)] + [X2_NOMINAL_HEIGHT]
+))
+X2_FOOT_GEOM_COUNT = 12  # spheres
+X2_IS_CAPSULE = False
+X2_ALIGN_OFFSET = np.array([0.0, 0.0])
+
+ROBOT_CONFIGS = {
+    "g1": {
+        "xml": G1_XML,
+        "assets_dir": G1_ASSETS_DIR,
+        "nominal_height": G1_NOMINAL_HEIGHT,
+        "target_heights": G1_TARGET_HEIGHTS,
+        "foot_geom_count": G1_FOOT_GEOM_COUNT,
+        "is_capsule": G1_IS_CAPSULE,
+        "align_offset": G1_ALIGN_OFFSET,
+    },
+    "x2": {
+        "xml": X2_XML,
+        "assets_dir": X2_ASSETS_DIR,
+        "nominal_height": X2_NOMINAL_HEIGHT,
+        "target_heights": X2_TARGET_HEIGHTS,
+        "foot_geom_count": X2_FOOT_GEOM_COUNT,
+        "is_capsule": X2_IS_CAPSULE,
+        "align_offset": X2_ALIGN_OFFSET,
+    },
+}
+
+# Lower-body joints to optimize (12 DOF) — same names for G1 and X2.
 LOWER_BODY_JOINTS = [
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
@@ -43,24 +88,12 @@ LOWER_BODY_JOINTS = [
     "right_ankle_roll_joint",
 ]
 
-# Target heights (absolute world-frame z, meters).
-TARGET_HEIGHTS = [round(h, 2) for h in np.arange(0.50, 0.79, 0.02)]
-# Include nominal height explicitly.
-NOMINAL_HEIGHT = 0.76
-if NOMINAL_HEIGHT not in TARGET_HEIGHTS:
-    TARGET_HEIGHTS.append(NOMINAL_HEIGHT)
-    TARGET_HEIGHTS.sort()
 
-# XY offset from foot centroid for pelvis alignment target (meters).
-ALIGN_OFFSET = np.array([-0.05, 0.0])
-
-
-def load_g1_model():
-    """Load the G1 MJCF model with mesh assets."""
-    spec = mujoco.MjSpec.from_file(str(G1_XML))
-    # Load mesh assets so MuJoCo can resolve them.
+def load_model(xml_path, assets_dir):
+    """Load an MJCF model with mesh assets."""
+    spec = mujoco.MjSpec.from_file(str(xml_path))
     assets = {}
-    for f in ASSETS_DIR.iterdir():
+    for f in assets_dir.iterdir():
         if f.is_file():
             assets[f.name] = f.read_bytes()
     spec.assets = assets
@@ -85,29 +118,28 @@ def get_joint_info(model):
     return joint_ids, qpos_ids, np.array(lower), np.array(upper)
 
 
-def get_foot_geom_info(model):
-    """Get foot capsule geom local endpoints in the ankle_roll_link frame.
+def get_foot_geom_info(model, foot_geom_count, is_capsule=True):
+    """Get foot geom local points in the ankle_roll_link frame.
 
-    Each foot has 7 capsule geoms. For each capsule, we compute the two
-    endpoints from the compiled geom_pos, geom_quat, and geom_size:
-        endpoint = geom_pos ± quat_rotate(geom_quat, [0, 0, size[1]])
+    For capsules (G1): each geom produces 2 endpoints (14 points per foot).
+    For spheres (X2): each geom produces 1 point (12 points per foot).
     """
     foot_geoms = {"left": [], "right": []}
     for side in ("left", "right"):
-        for i in range(1, 8):
+        for i in range(1, foot_geom_count + 1):
             name = f"{side}_foot{i}_collision"
             gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
-            pos = model.geom_pos[gid].copy()        # [3]
-            quat = model.geom_quat[gid].copy()      # [4] (wxyz)
-            half_len = model.geom_size[gid, 1]       # scalar
-            # Rotate [0, 0, ±half_len] by the geom quaternion.
-            axis = np.array([0.0, 0.0, 1.0])
-            rot = _quat_rotate(quat, axis)
-            p0 = pos - rot * half_len
-            p1 = pos + rot * half_len
-            foot_geoms[side].append(p0)
-            foot_geoms[side].append(p1)
-        foot_geoms[side] = np.array(foot_geoms[side])  # [14, 3]
+            pos = model.geom_pos[gid].copy()
+            if is_capsule:
+                quat = model.geom_quat[gid].copy()      # [4] (wxyz)
+                half_len = model.geom_size[gid, 1]       # scalar
+                axis = np.array([0.0, 0.0, 1.0])
+                rot = _quat_rotate(quat, axis)
+                foot_geoms[side].append(pos - rot * half_len)
+                foot_geoms[side].append(pos + rot * half_len)
+            else:
+                foot_geoms[side].append(pos)
+        foot_geoms[side] = np.array(foot_geoms[side])
 
     left_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
     right_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
@@ -138,7 +170,7 @@ def compute_foot_world_xy(data, body_id, local_points):
 
 
 def compute_foot_centroid(data, left_body, right_body, left_local, right_local):
-    """Compute world-frame XY centroid of all foot capsule endpoints."""
+    """Compute world-frame XY centroid of all foot geom points."""
     left_xy = compute_foot_world_xy(data, left_body, left_local)
     right_xy = compute_foot_world_xy(data, right_body, right_local)
     all_xy = np.concatenate([left_xy, right_xy], axis=0)
@@ -165,8 +197,8 @@ def compute_posture_for_height(
     align_offset,
 ):
     """Find lower-body joint angles that place pelvis at target_z with feet on ground."""
-    left_local = foot_geoms["left"]   # [14, 3]
-    right_local = foot_geoms["right"]  # [14, 3]
+    left_local = foot_geoms["left"]
+    right_local = foot_geoms["right"]
 
     def objective(q):
         # Set lower-body joint angles.
@@ -182,7 +214,7 @@ def compute_posture_for_height(
 
         mujoco.mj_forward(model, data)
 
-        # Foot z-position error: all foot capsule endpoints should be at z=0.
+        # Foot z-position error: all foot geom points should be at z=0.
         left_z = compute_foot_ground_z(data, left_ankle_body, left_local)
         right_z = compute_foot_ground_z(data, right_ankle_body, right_local)
         foot_error = np.sum(left_z**2) + np.sum(right_z**2)
@@ -194,8 +226,8 @@ def compute_posture_for_height(
         # Pelvis-foot alignment: pelvis xy should be at the foot polygon centroid.
         left_xy = compute_foot_world_xy(data, left_ankle_body, left_local)
         right_xy = compute_foot_world_xy(data, right_ankle_body, right_local)
-        all_xy = np.concatenate([left_xy, right_xy], axis=0)  # [28, 2]
-        foot_centroid = np.mean(all_xy, axis=0)  # [2]
+        all_xy = np.concatenate([left_xy, right_xy], axis=0)
+        foot_centroid = np.mean(all_xy, axis=0)
         pelvis_xy = data.xpos[pelvis_body_id, :2]
         align_error = np.sum((pelvis_xy - (foot_centroid + align_offset)) ** 2)
 
@@ -213,7 +245,6 @@ def compute_posture_for_height(
 
         # Sagittal plane constraint: strongly penalize hip_roll and hip_yaw
         # to keep legs in the sagittal plane (no sideways splay).
-        # q indices: hip_pitch=0, hip_roll=1, hip_yaw=2 per leg
         sagittal_penalty = 0.0
         sagittal_penalty += q[1] ** 2 + q[7] ** 2   # hip_roll L/R
         sagittal_penalty += q[2] ** 2 + q[8] ** 2   # hip_yaw L/R
@@ -239,29 +270,28 @@ def compute_posture_for_height(
     return result.x, result.fun
 
 
-def main():
-    model, data = load_g1_model()
-    _, qpos_ids, joint_lower, joint_upper = get_joint_info(model)
-    foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(model)
-    pelvis_body_id = get_pelvis_body_id(model)
-
+def compute_postures(model, data, qpos_ids, joint_lower, joint_upper,
+                     foot_geoms, left_ankle_body, right_ankle_body,
+                     pelvis_body_id, target_heights, align_offset):
+    """Compute postures for all target heights."""
     # Initial guess: HOME_KEYFRAME values for lower body.
-    # From g1_constants.py: hip_pitch=-0.1, knee=0.3, ankle_pitch=-0.2
+    # hip_pitch=-0.1, knee=0.3, ankle_pitch=-0.2 (same for G1 and X2).
     q_home = np.array([
         -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,   # left leg
         -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,   # right leg (mirror)
     ])
     q_home = np.clip(q_home, joint_lower, joint_upper)
 
+    pts_per_foot = len(foot_geoms["left"])
     print(f"Model loaded: {model.nq} qpos, {model.nv} qvel")
     print(f"Lower-body joints: {len(LOWER_BODY_JOINTS)}")
-    print(f"Foot geoms: 14 endpoints per foot (7 capsules x 2 endpoints)")
+    print(f"Foot geoms: {pts_per_foot} points per foot")
     print()
 
     results = {}
     q_prev = q_home.copy()
 
-    for target_z in TARGET_HEIGHTS:
+    for target_z in target_heights:
         # Try warm-start from previous, HOME_KEYFRAME, and random restarts.
         candidates = []
         for q_init_try in [q_prev, q_home]:
@@ -271,7 +301,7 @@ def main():
                 foot_geoms, left_ankle_body, right_ankle_body,
                 pelvis_body_id,
                 q_init_try,
-                ALIGN_OFFSET,
+                align_offset,
             )
             candidates.append((q_try, cost_try))
         # Random restarts to escape local minima.
@@ -284,7 +314,7 @@ def main():
                 foot_geoms, left_ankle_body, right_ankle_body,
                 pelvis_body_id,
                 q_rand,
-                ALIGN_OFFSET,
+                align_offset,
             )
             candidates.append((q_try, cost_try))
         # Pick the best.
@@ -320,13 +350,13 @@ def main():
 
         q_prev = q_opt.copy()
 
-    return model, data, results, qpos_ids
+    return results
 
 
 def format_postures(results):
     """Format HEIGHT_POSTURES dict as a Python source string."""
     lines = [
-        '"""Computed height postures from generate_height_poses.py."""',
+        '"""Computed height postures from compute_height_postures.py."""',
         "",
         "",
         "HEIGHT_POSTURES = {",
@@ -414,20 +444,36 @@ def show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--robot", choices=["g1", "x2"], default="g1",
+                        help="Robot model to use (default: g1)")
     parser.add_argument("--show", action="store_true", help="Open MuJoCo viewer to inspect postures")
     parser.add_argument("--postures-file", type=str, help="Load existing HEIGHT_POSTURES dict from a Python file instead of computing")
     parser.add_argument("--save", type=str, help="Save HEIGHT_POSTURES dict to a Python file")
     args = parser.parse_args()
 
+    cfg = ROBOT_CONFIGS[args.robot]
+
     if args.postures_file:
         results = load_postures(args.postures_file)
-        model, data = load_g1_model()
+        model, data = load_model(cfg["xml"], cfg["assets_dir"])
         _, qpos_ids, _, _ = get_joint_info(model)
-        foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(model)
+        foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(
+            model, cfg["foot_geom_count"], cfg["is_capsule"])
         print(f"Loaded {len(results)} height postures from {args.postures_file}")
-        show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, ALIGN_OFFSET)
+        show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, cfg["align_offset"])
     else:
-        model, data, results, qpos_ids = main()
+        model, data = load_model(cfg["xml"], cfg["assets_dir"])
+        _, qpos_ids, joint_lower, joint_upper = get_joint_info(model)
+        foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(
+            model, cfg["foot_geom_count"], cfg["is_capsule"])
+        pelvis_body_id = get_pelvis_body_id(model)
+
+        results = compute_postures(
+            model, data, qpos_ids, joint_lower, joint_upper,
+            foot_geoms, left_ankle_body, right_ankle_body,
+            pelvis_body_id, cfg["target_heights"], cfg["align_offset"],
+        )
+
         text = format_postures(results)
         if args.save:
             Path(args.save).write_text(text)
@@ -435,5 +481,4 @@ if __name__ == "__main__":
         else:
             print(text)
         if args.show:
-            foot_geoms, left_ankle_body, right_ankle_body = get_foot_geom_info(model)
-            show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, ALIGN_OFFSET)
+            show_in_viewer(model, data, results, qpos_ids, foot_geoms, left_ankle_body, right_ankle_body, cfg["align_offset"])

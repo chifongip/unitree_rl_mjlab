@@ -58,3 +58,12 @@ class G1_23DOF_LocomanipulationOnPolicyRunner(LocomanipulationOnPolicyRunner):
     **LocomanipulationOnPolicyRunner._DEFAULT_SYMMETRY_CFG,
     "data_augmentation_func": "src.tasks.locomanipulation.mdp.symmetry.g1_23dof_locomanipulation_symmetry",
   }
+
+
+class X2_LocomanipulationOnPolicyRunner(LocomanipulationOnPolicyRunner):
+  """Runner for X2 locomanipulation with X2 symmetry function."""
+
+  _DEFAULT_SYMMETRY_CFG = {
+    **LocomanipulationOnPolicyRunner._DEFAULT_SYMMETRY_CFG,
+    "data_augmentation_func": "src.tasks.locomanipulation.mdp.symmetry.x2_locomanipulation_symmetry",
+  }

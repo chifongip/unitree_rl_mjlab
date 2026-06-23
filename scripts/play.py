@@ -66,6 +66,61 @@ PREDEFINED_POSES: list[dict[str, float]] = [
   },
 ]
 
+# X2 predefined poses — all 14 arm joints (7 per arm). Values are placeholders.
+PREDEFINED_POSES_X2: list[dict[str, float]] = [
+  {
+    # F1: default pose
+    "left_shoulder_pitch_joint": 0.0,
+    "left_shoulder_roll_joint": 0.0,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": 0.0,
+    "left_wrist_yaw_joint": 0.0,
+    "left_wrist_pitch_joint": 0.0,
+    "left_wrist_roll_joint": 0.0,
+    "right_shoulder_pitch_joint": 0.0,
+    "right_shoulder_roll_joint": 0.0,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": 0.0,
+    "right_wrist_yaw_joint": 0.0,
+    "right_wrist_pitch_joint": 0.0,
+    "right_wrist_roll_joint": 0.0,
+  },
+  {
+    # F2: relaxed down
+    "left_shoulder_pitch_joint": 0.35,
+    "left_shoulder_roll_joint": 0.1,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": -0.87,
+    "left_wrist_yaw_joint": 0.0,
+    "left_wrist_pitch_joint": 0.0,
+    "left_wrist_roll_joint": 0.0,
+    "right_shoulder_pitch_joint": 0.35,
+    "right_shoulder_roll_joint": -0.1,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": -0.87,
+    "right_wrist_yaw_joint": 0.0,
+    "right_wrist_pitch_joint": 0.0,
+    "right_wrist_roll_joint": 0.0,
+  },
+  {
+    # F3: T-pose
+    "left_shoulder_pitch_joint": 0.0,
+    "left_shoulder_roll_joint": 1.57,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": 0.0,
+    "left_wrist_yaw_joint": 0.0,
+    "left_wrist_pitch_joint": 0.0,
+    "left_wrist_roll_joint": 0.0,
+    "right_shoulder_pitch_joint": 0.0,
+    "right_shoulder_roll_joint": -1.57,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": 0.0,
+    "right_wrist_yaw_joint": 0.0,
+    "right_wrist_pitch_joint": 0.0,
+    "right_wrist_roll_joint": 0.0,
+  },
+]
+
 
 class KeyboardCommandOverride:
     """Keyboard-driven command overrides for the native viewer.
@@ -620,8 +675,9 @@ def run_play(task_id: str, cfg: PlayConfig):
     # Upper body pose switching via F8-F11 keys.
     act_mgr = env.unwrapped.action_manager
     if "upper_body_motion" in getattr(act_mgr, "_terms", {}):
-        _patch_upper_body_pose(act_mgr._terms["upper_body_motion"], override, PREDEFINED_POSES)
-        pose_keys = ", ".join(f"F{i+8}=pose{i}" for i in range(len(PREDEFINED_POSES)))
+        poses = PREDEFINED_POSES_X2 if "x2" in task_id.lower() else PREDEFINED_POSES
+        _patch_upper_body_pose(act_mgr._terms["upper_body_motion"], override, poses)
+        pose_keys = ", ".join(f"F{i+8}=pose{i}" for i in range(len(poses)))
         print(f"[INFO] Keyboard overrides: numpad 8/2=vel_x, 4/6=vel_y, "
               f"7/9=yaw, +/-=height, 5=zero vel, 0=reset height, {pose_keys}")
     else:
