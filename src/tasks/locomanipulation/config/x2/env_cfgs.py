@@ -86,7 +86,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
 
   site_names = ("left_foot", "right_foot")
   geom_names = tuple(
-    f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 13)
+    f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 8)
   )
 
   feet_ground_cfg = ContactSensorCfg(
