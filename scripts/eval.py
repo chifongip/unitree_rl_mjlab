@@ -3,8 +3,8 @@
 Computes MAE per (model, force_level), averaged across all (pose, velocity) combos.
 Plots force vs error with one curve per model for comparison.
 
-Supports multi-task evaluation: mix 23-DOF and 29-DOF models in a single run by
-specifying per-model `task` in the eval config YAML.
+Supports multi-task evaluation: mix G1 (29-DOF, 23-DOF) and Agibot X2 models in a
+single run by specifying per-model `task` in the eval config YAML.
 
 Usage:
     # Single checkpoint
@@ -49,28 +49,52 @@ from mjlab.utils.torch import configure_torch_backends
 # Upper-body pose presets (values in radians).
 # ---------------------------------------------------------------------------
 
-_29DOF_UPPER_BODY_JOINTS: tuple[str, ...] = (
-    "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
-    "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
-    "left_shoulder_yaw_joint", "left_elbow_joint",
-    "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
-    "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
-    "right_shoulder_yaw_joint", "right_elbow_joint",
-    "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
-)
-
-_23DOF_UPPER_BODY_JOINTS: tuple[str, ...] = (
-    "waist_yaw_joint",
-    "left_shoulder_pitch_joint", "left_shoulder_roll_joint",
-    "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint",
-    "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
-    "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
-)
-
 POSE_PRESETS: dict[str, dict[str, float]] = {
     "neutral": {},
-    "zero": {j: 0.0 for j in _29DOF_UPPER_BODY_JOINTS},
-    "23dof_zero": {j: 0.0 for j in _23DOF_UPPER_BODY_JOINTS},
+    "g1_zero": {
+        "left_shoulder_pitch_joint": 0.0,
+        "left_shoulder_roll_joint": 0.0,
+        "left_shoulder_yaw_joint": 0.0,
+        "left_elbow_joint": 0.0,
+        "left_wrist_roll_joint": 0.0,
+        "left_wrist_pitch_joint": 0.0,
+        "left_wrist_yaw_joint": 0.0,
+        "right_shoulder_pitch_joint": 0.0,
+        "right_shoulder_roll_joint": 0.0,
+        "right_shoulder_yaw_joint": 0.0,
+        "right_elbow_joint": 0.0,
+        "right_wrist_roll_joint": 0.0,
+        "right_wrist_pitch_joint": 0.0,
+        "right_wrist_yaw_joint": 0.0,
+    },
+    "g1_23dof_zero": {
+        "left_shoulder_pitch_joint": 0.0,
+        "left_shoulder_roll_joint": 0.0,
+        "left_shoulder_yaw_joint": 0.0,
+        "left_elbow_joint": 0.0,
+        "left_wrist_roll_joint": 0.0,
+        "right_shoulder_pitch_joint": 0.0,
+        "right_shoulder_roll_joint": 0.0,
+        "right_shoulder_yaw_joint": 0.0,
+        "right_elbow_joint": 0.0,
+        "right_wrist_roll_joint": 0.0,
+    },
+    "x2_zero": {
+        "left_shoulder_pitch_joint": 0.0,
+        "left_shoulder_roll_joint": 0.0,
+        "left_shoulder_yaw_joint": 0.0,
+        "left_elbow_joint": -1.57,
+        "left_wrist_yaw_joint": 0.0,
+        "left_wrist_pitch_joint": 0.0,
+        "left_wrist_roll_joint": 0.0,
+        "right_shoulder_pitch_joint": 0.0,
+        "right_shoulder_roll_joint": 0.0,
+        "right_shoulder_yaw_joint": 0.0,
+        "right_elbow_joint": -1.57,
+        "right_wrist_yaw_joint": 0.0,
+        "right_wrist_pitch_joint": 0.0,
+        "right_wrist_roll_joint": 0.0,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -294,11 +318,13 @@ def compute_velocity_metrics(ep: EpisodeData) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def _get_upper_body_joints(task_id: str) -> tuple[str, ...]:
-    """Derive upper-body joint names based on task DOF variant."""
+def _get_zero_pose(task_id: str) -> dict[str, float]:
+    """Return the correct zero-pose dict for a given task."""
+    if "X2" in task_id or "x2" in task_id:
+        return POSE_PRESETS["x2_zero"]
     if "23Dof" in task_id or "23dof" in task_id:
-        return _23DOF_UPPER_BODY_JOINTS
-    return _29DOF_UPPER_BODY_JOINTS
+        return POSE_PRESETS["g1_23dof_zero"]
+    return POSE_PRESETS["g1_zero"]
 
 
 def _configure_env_base(
@@ -314,11 +340,12 @@ def _configure_env_base(
     # Height command.
     env_cfg.commands["base_height"].fixed_height = fixed_height
 
-    # Default pose placeholder (ensures _fixed_pose tensor is always created).
-    upper_joints = _get_upper_body_joints(task_id)
-    env_cfg.actions["upper_body_motion"].fixed_upper_body_pose = {
-        joint: 0.0 for joint in upper_joints
-    }
+    # Pin waist yaw to zero (policy controls waist, eval locks it to nominal).
+    if "waist_yaw" in env_cfg.commands:
+        env_cfg.commands["waist_yaw"].fixed_waist_yaw = 0.0
+
+    # Default pose placeholder (arm joints only; waist excluded).
+    env_cfg.actions["upper_body_motion"].fixed_upper_body_pose = _get_zero_pose(task_id)
 
     # Default force: no force (will be overridden at runtime).
     force_params = env_cfg.events["hand_force"].params
@@ -331,8 +358,10 @@ def _configure_env_base(
     env_cfg.commands["twist"].resampling_time_range = (long_time, long_time)
 
 
-def _configure_force_and_pose(env, force_name: str, pose_name: str) -> None:
-    """Mutate force and pose on a live env."""
+def _configure_force_and_pose(
+    env, force_name: str, pose_name: str, task_id: str = "",
+) -> None:
+    """Set force and pose on a live env using public APIs."""
     # Force: modify event params.
     force_cfg = env.unwrapped.event_manager.get_term_cfg("hand_force")
     force_dict = _FORCE_PRESETS[force_name]
@@ -343,21 +372,14 @@ def _configure_force_and_pose(env, force_name: str, pose_name: str) -> None:
         force_cfg.params["constant_force"] = None
         force_cfg.params["no_force_ratio"] = 1.0
 
-    # Pose: modify action term's internal tensor.
-    pose_dict = POSE_PRESETS[pose_name]
-    action_term = env.unwrapped.action_manager.get_term("upper_body_motion")
-    fixed = action_term._default_joint_pos[0].clone()
-    all_names = action_term._entity.joint_names
-    for name, value in pose_dict.items():
-        matches = [i for i, jid in enumerate(action_term._joint_ids) if all_names[jid] == name]
-        if matches:
-            fixed[matches[0]] = value
-    if action_term._waist_zero_cols:
-        fixed[action_term._waist_zero_cols] = 0.0
-    if action_term._fixed_pose is not None:
-        action_term._fixed_pose[:] = fixed
+    # Pose: use public set_fixed_pose() API.
+    # Auto-select the correct zero preset for the task's DOF variant.
+    if pose_name.endswith("_zero") and task_id:
+        pose_dict = _get_zero_pose(task_id)
     else:
-        action_term._fixed_pose = fixed
+        pose_dict = POSE_PRESETS[pose_name]
+    action_term = env.unwrapped.action_manager.get_term("upper_body_motion")
+    action_term.set_fixed_pose(pose_dict or None)
 
 
 
@@ -451,6 +473,7 @@ def _run_viewer_combo_multi_vel(
     pose_name: str,
     num_steps: int,
     device: str,
+    task_id: str = "",
 ) -> None:
     """Run all velocity combos in parallel with the native viewer."""
     from mjlab.viewer import NativeMujocoViewer
@@ -472,7 +495,7 @@ def _run_viewer_combo_multi_vel(
         desired_commands[ids, 1] = vy
         desired_commands[ids, 2] = wz
 
-    _configure_force_and_pose(env, force_name, pose_name)
+    _configure_force_and_pose(env, force_name, pose_name, task_id=task_id)
 
     term = env.unwrapped.command_manager.get_term("twist")
     term.cfg.fixed_command = None
@@ -572,7 +595,7 @@ class EvalConfig:
     vel_y: tuple[float, ...] = (0.0,)
     ang_z: tuple[float, ...] = (-0.5, 0.0, 0.5)
     force_conditions: tuple[str, ...] = ("none", "medium", "large")
-    body_poses: tuple[str, ...] = ("zero",)
+    body_poses: tuple[str, ...] = ("g1_zero",)
     fixed_height: float | None = None
     """Override base height for all models. If None, auto-detected from checkpoint params."""
     output_dir: str = "eval_results"
@@ -585,8 +608,9 @@ class EvalConfig:
 def _resolve_fixed_height(
     log_dir: Path | None,
     cfg: EvalConfig,
+    task_id: str = "",
 ) -> float:
-    """Resolve fixed_height: CLI override > saved params > default 0.785."""
+    """Resolve fixed_height: CLI override > saved params > per-robot default."""
     if cfg.fixed_height is not None:
         return cfg.fixed_height
     if log_dir is not None:
@@ -594,7 +618,10 @@ def _resolve_fixed_height(
         h = _extract_fixed_height_from_params(params_path)
         if h is not None:
             return h
-    return 0.785
+    # Per-robot fallback based on task_id.
+    if "X2" in task_id or "x2" in task_id:
+        return 0.66
+    return 0.76  # G1 variants (29-DOF and 23-DOF)
 
 
 def run_eval(task_id: str, cfg: EvalConfig):
@@ -617,7 +644,7 @@ def run_eval(task_id: str, cfg: EvalConfig):
                     raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
                 if not name:
                     name = ckpt_path.stem
-                h = _resolve_fixed_height(ckpt_path.parent, cfg)
+                h = _resolve_fixed_height(ckpt_path.parent, cfg, task_id=entry_task)
                 checkpoints.append(EvalCheckpoint(
                     name=name, path=ckpt_path, log_dir=ckpt_path.parent,
                     task_id=entry_task, fixed_height=h,
@@ -626,7 +653,7 @@ def run_eval(task_id: str, cfg: EvalConfig):
             p = Path(cfg.checkpoint_file)
             if not p.exists():
                 raise FileNotFoundError(f"Checkpoint not found: {p}")
-            h = _resolve_fixed_height(p.parent, cfg)
+            h = _resolve_fixed_height(p.parent, cfg, task_id=task_id)
             checkpoints.append(EvalCheckpoint(
                 name=p.stem, path=p, log_dir=p.parent,
                 task_id=task_id, fixed_height=h,
@@ -634,9 +661,10 @@ def run_eval(task_id: str, cfg: EvalConfig):
         else:
             raise ValueError("Provide --eval-config or --checkpoint-file for trained agent")
     else:
+        default_h = 0.66 if ("X2" in task_id or "x2" in task_id) else 0.76
         checkpoints.append(EvalCheckpoint(
             name=cfg.agent, path=None, log_dir=None,
-            task_id=task_id, fixed_height=cfg.fixed_height or 0.785,
+            task_id=task_id, fixed_height=cfg.fixed_height or default_h,
         ))
 
     # Cache agent_cfg per task_id.
@@ -687,6 +715,7 @@ def run_eval(task_id: str, cfg: EvalConfig):
                         _run_viewer_combo_multi_vel(
                             env, policy, vel_combos,
                             force_name, pose_name, cfg.episode_steps, device,
+                            task_id=ckpt.task_id,
                         )
             finally:
                 env.close()
@@ -724,7 +753,13 @@ def run_eval(task_id: str, cfg: EvalConfig):
                     if pose_name not in POSE_PRESETS:
                         raise ValueError(f"Unknown body pose: {pose_name}")
 
-                    _configure_force_and_pose(env, force_name, pose_name)
+                    _configure_force_and_pose(env, force_name, pose_name, task_id=ckpt.task_id)
+
+                    # Resolve the actual pose dict for this task's DOF variant.
+                    if pose_name.endswith("_zero"):
+                        pose_dict = _get_zero_pose(ckpt.task_id)
+                    else:
+                        pose_dict = POSE_PRESETS[pose_name]
 
                     ep_datas = run_episode_batch_multi_vel(
                         env, policy, vel_combos, cfg.episode_steps, device,
@@ -735,7 +770,7 @@ def run_eval(task_id: str, cfg: EvalConfig):
                             force_name=force_name,
                             force_dict=_FORCE_PRESETS[force_name],
                             pose_name=pose_name,
-                            pose_dict=POSE_PRESETS[pose_name],
+                            pose_dict=pose_dict,
                         )
                         ep_data.combo = combo
                         metrics = compute_velocity_metrics(ep_data)
