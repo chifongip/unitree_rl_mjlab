@@ -90,7 +90,7 @@
               <joint name="left_knee_joint" pos="0 0 0" axis="0 1 0" range="0 2.4073" actuatorfrcrange="-120 120"/>
               <geom class="visual" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" mesh="left_knee_link"/>
               <geom name="left_shin_collision" class="collision" size="0.065" fromto="0 0 0.005 0 0 -0.18"/>
-              <geom name="left_linkage_brace_collision" class="collision" size="0.05" fromto="0 0 -0.26 0 0 -0.27"/>
+              <geom name="left_linkage_brace_collision" class="collision" size="0.045" fromto="0 0 -0.26 0 0 -0.265"/>
               <body name="left_ankle_pitch_link" pos="-0.01 -0.000124911 -0.282">
                 <inertial pos="0.011691 -0.000181 0.003548" quat="0.72346 -0.0457688 0.0674454 0.685537" mass="0.747802" diaginertia="0.00117429 0.000984841 0.000709871"/>
                 <joint name="left_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.803 0.453" actuatorfrcrange="-36 36"/>
@@ -132,7 +132,7 @@
               <joint name="right_knee_joint" pos="0 0 0" axis="0 1 0" range="0 2.4073" actuatorfrcrange="-120 120"/>
               <geom class="visual" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" mesh="right_knee_link"/>
               <geom name="right_shin_collision" class="collision" size="0.065" fromto="0 0 0.005 0 0 -0.18"/>
-              <geom name="right_linkage_brace_collision" class="collision" size="0.05" fromto="0 0 -0.26 0 0 -0.27"/>
+              <geom name="right_linkage_brace_collision" class="collision" size="0.045" fromto="0 0 -0.26 0 0 -0.265"/>
               <body name="right_ankle_pitch_link" pos="-0.01 0.000124911 -0.282">
                 <inertial pos="0.011665 0.000937 0.00394" quat="0.7183 0.0624712 -0.034146 0.692081" mass="0.749566" diaginertia="0.00122381 0.00103716 0.000713034"/>
                 <joint name="right_ankle_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.803 0.453" actuatorfrcrange="-36 36"/>
