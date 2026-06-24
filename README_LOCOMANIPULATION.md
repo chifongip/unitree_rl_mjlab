@@ -280,7 +280,7 @@ models:
 | `--eval-config <yaml>` | — | Multi-checkpoint config |
 | `--checkpoint-file <pt>` | — | Single checkpoint (ignored if `--eval-config` set) |
 | `--force-conditions` | `"none" "medium" "large"` | Force presets to test |
-| `--body-poses` | `"zero"` | Pose presets (`"neutral"`, `"zero"`, `"23dof_zero"`) |
+| `--body-poses` | `"g1_zero"` | Pose presets (`"neutral"`, `"g1_zero"`, `"g1_23dof_zero"`, `"x2_zero"`) |
 | `--vel-x` | `(-0.5, 0.0, 0.5)` | Velocity x sweep (Python tuple syntax) |
 | `--vel-y` | `(0.0,)` | Velocity y sweep |
 | `--ang-z` | `(-0.5, 0.0, 0.5)` | Angular velocity z sweep |
@@ -383,7 +383,7 @@ All configs also define `LOWER_BODY_JOINT_NAMES`, `LOWER_BODY_JOINT_PATTERNS`, a
 | Wrist bodies | `wrist_yaw_link` | `wrist_roll_rubber_hand` | `wrist_yaw_link` |
 | Motion data | `accad_all.pkl` | `accad_all_g1_23dof_clean.pkl` | `amass_all.pkl` |
 | Height postures | `postures.py` | `postures.py` | `postures_x2.py` |
-| Gain presets | `G1_GAIN_PRESETS` | `G1_23DOF_GAIN_PRESETS` | Hardcoded |
+| Gain presets | `G1_GAIN_PRESETS` | `G1_23DOF_GAIN_PRESETS` | `X2_GAIN_PRESETS` |
 | Symmetry | `G1Symmetry` | `G1_23DOFSymmetry` | `X2Symmetry` |
 | Waist DOFs | yaw/roll/pitch | yaw only | yaw/pitch/roll |
 | Wrist DOFs | roll/pitch/yaw | roll only | yaw/pitch/roll |
@@ -398,9 +398,13 @@ G1_GAIN_PRESETS = {
     "unitree": {...},
     "unitree_stiff": {...},  # Used by default in configs
 }
-```
 
-X2 uses hardcoded gains (no presets).
+# X2 has its own preset structure:
+X2_GAIN_PRESETS = {
+    "default": {...},        # Derived from effort/1.7 ratio
+    "agibot_stiff": {...},   # Used by default in configs
+}
+```
 
 ## Key Files Reference
 

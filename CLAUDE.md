@@ -47,7 +47,7 @@ Policy controls lower-body + waist DOFs. Upper body driven by `UpperBodyMotionAc
 |---|---|---|---|
 | Actuated joints | 29 | 23 | 29 |
 | Actuator model | `UnitreeActuatorCfg` (motor model) | Same | `BuiltinPositionActuatorCfg` (generic) |
-| Gain presets | default/unitree/unitree_stiff | Same | None (hardcoded) |
+| Gain presets | default/unitree/unitree_stiff | Same | default/agibot_stiff |
 | Waist order | yaw/roll/pitch | yaw only | yaw/pitch/roll |
 | Wrist order | roll/pitch/yaw | roll only | yaw/pitch/roll |
 | Arm joints | 14 (7/arm) | 10 (5/arm) | 14 (7/arm) |
