@@ -129,6 +129,36 @@ def track_waist_yaw(
   return reward
 
 
+def waist_regulation(
+  env: ManagerBasedRlEnv,
+  std: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  standing_command_name: str | None = None,
+  standing_threshold: float = 0.1,
+  standing_weight: float = 1.0,
+  walking_weight: float = 1.0,
+) -> torch.Tensor:
+  """Penalize waist roll/pitch deviation from default pose.
+
+  Penalty kernel: 1 - exp(-mean(sq(diff)) / std²). Returns 0 at target,
+  1 when far. Optionally applies different weights for standing vs walking,
+  gated by the twist command magnitude.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  error = torch.mean(torch.square(diff) / std**2, dim=-1)
+  penalty = 1.0 - torch.exp(-error)
+
+  if standing_command_name is not None:
+    twist_cmd = env.command_manager.get_command(standing_command_name)
+    assert twist_cmd is not None, f"Command '{standing_command_name}' not found."
+    total_command = torch.norm(twist_cmd[:, :2], dim=1) + torch.abs(twist_cmd[:, 2])
+    is_standing = (total_command < standing_threshold).float()
+    weight = is_standing * standing_weight + (1.0 - is_standing) * walking_weight
+    return penalty * weight
+  return penalty
+
+
 def body_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

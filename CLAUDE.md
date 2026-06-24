@@ -58,6 +58,9 @@ Policy controls lower-body + waist DOFs. Upper body driven by `UpperBodyMotionAc
 | Foot geoms | 7/foot | 7/foot | 7/foot |
 | Height postures | `scripts/postures.py` | Same | `scripts/postures_x2.py` |
 
+### Waist Regulation
+`waist_regulation` penalizes waist roll/pitch deviation from default pose (weight=-1.0). Uses penalty kernel `1 - exp(-mean(sq(diff)) / std²)`. Applies to G1 29-DOF and X2; removed for G1 23-DOF (no roll/pitch joints). Standing weight 2x, walking weight 1x.
+
 ### Key Gotchas
 - **Joint order matters for symmetry**: Symmetry is index-based. G1 waist = yaw/roll/pitch, X2 waist = yaw/pitch/roll. Wrong indices = wrong mirroring.
 - **`preserve_order=False`**: `SceneEntityCfg.resolve()` returns joints in MJCF natural order, not pattern order. `actuator_names` pattern order is irrelevant.

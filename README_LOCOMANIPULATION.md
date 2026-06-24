@@ -98,6 +98,7 @@ When velocity command magnitude < 0.1, three rewards reinforce stable stance:
 | `stand_still` | -1.0 | Hold target joint positions |
 | `leg_joint_vel_penalty` | -0.05 | Damp lower-body joint velocities |
 | `body_orientation_l2` | -1.0 | Stay upright |
+| `waist_regulation` | -1.0 | Keep waist roll/pitch near default (29-DOF only) |
 
 ### Curricula
 

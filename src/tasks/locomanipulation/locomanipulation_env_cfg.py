@@ -325,6 +325,20 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "walking_weight": 0.5,
       },
     ),
+    "waist_regulation": RewardTermCfg(
+      func=mdp.waist_regulation,
+      weight=-1.0,
+      params={
+        "std": math.sqrt(0.05),
+        "asset_cfg": SceneEntityCfg(
+          "robot", joint_names=("waist_roll_joint", "waist_pitch_joint")
+        ),
+        "standing_command_name": "twist",
+        "standing_threshold": 0.1,
+        "standing_weight": 2.0,
+        "walking_weight": 1.0,
+      },
+    ),
     "track_angular_velocity": RewardTermCfg(
       func=mdp.track_angular_velocity,
       weight=1.0,

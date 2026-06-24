@@ -257,6 +257,9 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     r".*ankle_roll.*": 0.1,
   }
 
+  # G1 23-DOF has no waist_roll/pitch joints.
+  cfg.rewards.pop("waist_regulation")
+
   # Restrict stand_still, joint_acc_l2, joint_pos_limits and leg_joint_vel_penalty to
   # lower-body joints.
   cfg.rewards["stand_still"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
