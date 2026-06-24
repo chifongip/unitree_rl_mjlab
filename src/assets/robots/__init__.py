@@ -49,6 +49,7 @@ from .unitree_h2.h2_constants import (
 
 from .agibot_x2.x2_constants import (
   X2_ACTION_SCALE as X2_ACTION_SCALE,
+  X2_GAIN_PRESETS as X2_GAIN_PRESETS,
 )
 from .agibot_x2.x2_constants import (
   get_agibot_x2_robot_cfg as get_agibot_x2_robot_cfg,

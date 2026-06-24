@@ -70,7 +70,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   cfg.sim.contact_sensor_maxmatch = 500
   cfg.sim.nconmax = 48
 
-  robot_cfg, action_scale = get_agibot_x2_robot_cfg()
+  robot_cfg, action_scale = get_agibot_x2_robot_cfg(preset="agibot_stiff")
   cfg.scene.entities = {"robot": robot_cfg}
   lower_body_action_scale = {
     pat: val

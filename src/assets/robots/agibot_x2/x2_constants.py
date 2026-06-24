@@ -29,34 +29,77 @@ def get_spec() -> mujoco.MjSpec:
 # Effort limits from XML actuatorfrcrange. Armature=0.03 from XML default class.
 # Gains derived from G1 ratios: stiffness ≈ effort / 1.7, damping ≈ stiffness * 0.117.
 
-X2_ACTUATOR_CFGS: dict[str, tuple[float, float, float, float]] = {
-  # pattern: (effort_limit, stiffness, damping, armature)
-  ".*_hip_pitch_joint": (118.0, 69.4, 8.1, 0.03),
-  ".*_hip_roll_joint": (118.0, 69.4, 8.1, 0.03),
-  ".*_hip_yaw_joint": (118.0, 69.4, 8.1, 0.03),
-  ".*_knee_joint": (118.0, 69.4, 8.1, 0.03),
-  ".*_ankle_pitch_joint": (36.0, 21.2, 2.5, 0.03),
-  ".*_ankle_roll_joint": (24.0, 14.1, 1.7, 0.03),
-  "waist_yaw_joint": (118.0, 69.4, 8.1, 0.03),
-  "waist_pitch_joint": (48.0, 28.2, 3.3, 0.03),
-  "waist_roll_joint": (48.0, 28.2, 3.3, 0.03),
-  ".*_shoulder_pitch_joint": (36.0, 21.2, 2.5, 0.03),
-  ".*_shoulder_roll_joint": (36.0, 21.2, 2.5, 0.03),
-  ".*_shoulder_yaw_joint": (24.0, 14.1, 1.7, 0.03),
-  ".*_elbow_joint": (24.0, 14.1, 1.7, 0.03),
-  ".*_wrist_yaw_joint": (24.0, 14.1, 1.7, 0.03),
-  ".*_wrist_pitch_joint": (2.2, 1.3, 0.15, 0.03),
-  ".*_wrist_roll_joint": (2.2, 1.3, 0.15, 0.03),
+# Base actuator configs: effort limit and armature per joint pattern.
+# Stiffness/damping come from X2_GAIN_PRESETS.
+_X2_ACTUATOR_CFGS: dict[str, tuple[float, float]] = {
+  # pattern: (effort_limit, armature)
+  ".*_hip_pitch_joint": (118.0, 0.03),
+  ".*_hip_roll_joint": (118.0, 0.03),
+  ".*_hip_yaw_joint": (118.0, 0.03),
+  ".*_knee_joint": (118.0, 0.03),
+  ".*_ankle_pitch_joint": (36.0, 0.03),
+  ".*_ankle_roll_joint": (24.0, 0.03),
+  "waist_yaw_joint": (118.0, 0.03),
+  "waist_pitch_joint": (48.0, 0.03),
+  "waist_roll_joint": (48.0, 0.03),
+  ".*_shoulder_pitch_joint": (36.0, 0.03),
+  ".*_shoulder_roll_joint": (36.0, 0.03),
+  ".*_shoulder_yaw_joint": (24.0, 0.03),
+  ".*_elbow_joint": (24.0, 0.03),
+  ".*_wrist_yaw_joint": (24.0, 0.03),
+  ".*_wrist_pitch_joint": (2.2, 0.03),
+  ".*_wrist_roll_joint": (2.2, 0.03),
+}
+
+# Named gain presets: joint_pattern -> (stiffness, damping).
+X2_GAIN_PRESETS: dict[str, dict[str, tuple[float, float]]] = {
+  "default": {
+    ".*_hip_pitch_joint": (69.4, 8.1),
+    ".*_hip_roll_joint": (69.4, 8.1),
+    ".*_hip_yaw_joint": (69.4, 8.1),
+    ".*_knee_joint": (69.4, 8.1),
+    ".*_ankle_pitch_joint": (21.2, 2.5),
+    ".*_ankle_roll_joint": (14.1, 1.7),
+    "waist_yaw_joint": (69.4, 8.1),
+    "waist_pitch_joint": (28.2, 3.3),
+    "waist_roll_joint": (28.2, 3.3),
+    ".*_shoulder_pitch_joint": (21.2, 2.5),
+    ".*_shoulder_roll_joint": (21.2, 2.5),
+    ".*_shoulder_yaw_joint": (14.1, 1.7),
+    ".*_elbow_joint": (14.1, 1.7),
+    ".*_wrist_yaw_joint": (14.1, 1.7),
+    ".*_wrist_pitch_joint": (1.3, 0.15),
+    ".*_wrist_roll_joint": (1.3, 0.15),
+  },
+  "agibot_stiff": {
+    ".*_hip_pitch_joint": (100, 2.5),
+    ".*_hip_roll_joint": (100, 2.5),
+    ".*_hip_yaw_joint": (100, 2.5),
+    ".*_knee_joint": (200, 5.0),
+    ".*_ankle_pitch_joint": (20, 0.2),
+    ".*_ankle_roll_joint": (20, 0.1),
+    "waist_yaw_joint": (200, 5.0),
+    "waist_pitch_joint": (1200, 5.0),
+    "waist_roll_joint": (1200, 5.0),
+    ".*_shoulder_pitch_joint": (60, 1.5),
+    ".*_shoulder_roll_joint": (60, 1.5),
+    ".*_shoulder_yaw_joint": (60, 1.5),
+    ".*_elbow_joint": (60, 1.5),
+    ".*_wrist_yaw_joint": (60, 1.5),
+    ".*_wrist_pitch_joint": (60, 1.5),
+    ".*_wrist_roll_joint": (60, 1.5),
+  },
 }
 
 
-def _make_x2_actuators_and_scale() -> (
-  tuple[tuple[BuiltinPositionActuatorCfg, ...], dict[str, float]]
-):
-  """Build actuator configs and action scale from per-joint configs."""
+def _make_x2_actuators_and_scale(
+  gains: dict[str, tuple[float, float]],
+) -> tuple[tuple[BuiltinPositionActuatorCfg, ...], dict[str, float]]:
+  """Build actuator configs and action scale from per-joint gains."""
   actuators: list[BuiltinPositionActuatorCfg] = []
   scale: dict[str, float] = {}
-  for pattern, (effort, stiffness, damping, armature) in X2_ACTUATOR_CFGS.items():
+  for pattern, (effort, armature) in _X2_ACTUATOR_CFGS.items():
+    stiffness, damping = gains[pattern]
     actuators.append(BuiltinPositionActuatorCfg(
       target_names_expr=(pattern,),
       stiffness=stiffness,
@@ -68,7 +111,9 @@ def _make_x2_actuators_and_scale() -> (
   return tuple(actuators), scale
 
 
-_DEFAULT_ACTUATORS, X2_ACTION_SCALE = _make_x2_actuators_and_scale()
+_DEFAULT_ACTUATORS, X2_ACTION_SCALE = _make_x2_actuators_and_scale(
+  X2_GAIN_PRESETS["default"]
+)
 
 ##
 # Keyframe config.
@@ -129,13 +174,16 @@ X2_ARTICULATION = EntityArticulationInfoCfg(
 )
 
 
-def get_agibot_x2_robot_cfg() -> tuple[EntityCfg, dict[str, float]]:
-  """Get a fresh Agibot X2 robot configuration instance.
+def get_agibot_x2_robot_cfg(
+  preset: str = "default",
+) -> tuple[EntityCfg, dict[str, float]]:
+  """Get a fresh Agibot X2 robot configuration with the named gain preset.
 
   Returns:
     (entity_cfg, action_scale) — both fresh instances.
   """
-  actuators, action_scale = _make_x2_actuators_and_scale()
+  gains = X2_GAIN_PRESETS[preset]
+  actuators, action_scale = _make_x2_actuators_and_scale(gains)
   articulation = EntityArticulationInfoCfg(
     actuators=actuators,
     soft_joint_pos_limit_factor=0.9,
