@@ -55,7 +55,7 @@ Policy controls lower-body + waist DOFs. Upper body driven by `UpperBodyMotionAc
 | Motion data | `accad_all.pkl` | `accad_all.pkl` | `amass_all.pkl` |
 | `motion_dof_indices` | (15,16,17,18,19,20,21,22,23,24,25,26,27,28) | (15,16,17,18,19,22,23,24,25,26) | (15,16,17,18,19,20,21,22,23,24,25,26,27,28) |
 | Nominal height | 0.76m | 0.76m | 0.66m |
-| Foot geoms | 7/foot | 7/foot | 12/foot |
+| Foot geoms | 7/foot | 7/foot | 7/foot |
 | Height postures | `scripts/postures.py` | Same | `scripts/postures_x2.py` |
 
 ### Key Gotchas

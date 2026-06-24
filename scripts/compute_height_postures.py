@@ -47,9 +47,9 @@ X2_NOMINAL_HEIGHT = 0.66
 X2_TARGET_HEIGHTS = sorted(set(
     [round(h, 2) for h in np.arange(0.40, 0.67, 0.02)] + [X2_NOMINAL_HEIGHT]
 ))
-X2_FOOT_GEOM_COUNT = 12  # spheres
-X2_IS_CAPSULE = False
-X2_ALIGN_OFFSET = np.array([0.0, 0.0])
+X2_FOOT_GEOM_COUNT = 7   # capsules
+X2_IS_CAPSULE = True
+X2_ALIGN_OFFSET = np.array([-0.03, 0.0])
 
 ROBOT_CONFIGS = {
     "g1": {

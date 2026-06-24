@@ -387,7 +387,7 @@ All configs also define `LOWER_BODY_JOINT_NAMES`, `LOWER_BODY_JOINT_PATTERNS`, a
 | Symmetry | `G1Symmetry` | `G1_23DOFSymmetry` | `X2Symmetry` |
 | Waist DOFs | yaw/roll/pitch | yaw only | yaw/pitch/roll |
 | Wrist DOFs | roll/pitch/yaw | roll only | yaw/pitch/roll |
-| Foot geoms | 7/foot | 7/foot | 12/foot |
+| Foot geoms | 7/foot | 7/foot | 7/foot |
 
 ### Gain Presets
 
