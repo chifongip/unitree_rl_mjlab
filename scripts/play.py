@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +19,7 @@ from mjlab.tasks.tracking.mdp import MotionCommandCfg
 from mjlab.utils.os import get_wandb_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
+from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 
@@ -504,6 +505,8 @@ class PlayConfig:
   viewer: Literal["auto", "native", "viser"] = "auto"
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
+  terrain: Literal["rough", "flat"] | None = None
+  """Override terrain type. Useful for evaluating a flat-trained checkpoint on rough terrain."""
   params_dir: str | None = None
   """Path to params directory containing env.yaml. Auto-detected from checkpoint
   location when not specified. Use for wandb checkpoints where params/ is not
@@ -513,12 +516,32 @@ class PlayConfig:
   _demo_mode: tyro.conf.Suppress[bool] = False
 
 
+def _apply_terrain_override(env_cfg, terrain: str) -> None:
+  if terrain == "rough":
+    env_cfg.scene.terrain.terrain_type = "generator"
+    env_cfg.scene.terrain.terrain_generator = replace(ROUGH_TERRAINS_CFG)
+    env_cfg.sim.mujoco.ccd_iterations = 500
+    env_cfg.sim.contact_sensor_maxmatch = 500
+  elif terrain == "flat":
+    env_cfg.scene.terrain.terrain_type = "plane"
+    env_cfg.scene.terrain.terrain_generator = None
+    # Keep terrain_scan sensor and height_scan observations so that the
+    # observation dimension matches a rough-trained checkpoint.  On a flat
+    # plane the raycast returns uniform height values — the policy handles
+    # that fine.  Only remove the terrain curriculum (needs a generator).
+    env_cfg.curriculum.pop("terrain_levels", None)
+    env_cfg.sim.mujoco.ccd_iterations = 50
+    env_cfg.sim.contact_sensor_maxmatch = 64
+
+
 def run_play(task_id: str, cfg: PlayConfig):
   configure_torch_backends()
 
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
   env_cfg = load_env_cfg(task_id, play=True)
+  if cfg.terrain is not None:
+    _apply_terrain_override(env_cfg, cfg.terrain)
   agent_cfg = load_rl_cfg(task_id)
 
   DUMMY_MODE = cfg.agent in {"zero", "random"}
