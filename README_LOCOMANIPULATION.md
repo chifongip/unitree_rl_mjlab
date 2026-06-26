@@ -63,6 +63,23 @@ The policy outputs actions for lower-body joints + waist. Upper-body joints are 
 
 The `default_pose_ratio` curriculum gradually transitions from HOME_KEYFRAME to diverse motion poses during training.
 
+#### Motion Data Sources
+
+| Source | Clips | FPS | Path |
+|--------|-------|-----|------|
+| ACCAD | 252 | 30 | `src/assets/data/g1/accad_all.pkl` |
+| BONES-SEED | ~1,256 (Object Manipulation) | 30 | `src/assets/data/g1/bones_seed.pkl` |
+
+BONES-SEED is generated from the `/home/ubuntu/BONES-SEED` dataset (120 FPS source) using `scripts/convert_bones_seed.py`. The script filters by category, deduplicates by motion description, and downsamples to 30 FPS. After conversion, run `check_motion_collisions.py --clean` to remove collision frames.
+
+```bash
+# Generate BONES-SEED pkl (Object Manipulation, deduped, 30 FPS)
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+
+# Collision-clean
+python scripts/check_motion_collisions.py --robot g1 --motion-file src/assets/data/g1/bones_seed.pkl --clean
+```
+
 ### External Force Curriculum
 
 `HandForceEvent` simulates carrying heavy objects by applying random wrenches to end-effectors:
@@ -339,6 +356,49 @@ python scripts/compute_height_postures.py
 
 Computes IK-based joint postures for G1 at different standing heights (0.50m–0.76m). Used by `variable_posture` and `stand_still` rewards to look up target joint angles from commanded height.
 
+### Convert BONES-SEED Motion Data
+
+```bash
+# Default: Gestures, Communication, Baseline; dedup by description; downsample 120→30 FPS
+python scripts/convert_bones_seed.py --dedup --output src/assets/data/g1/bones_seed.pkl
+
+# Object Manipulation only
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+
+# Multiple categories, keep all actors (no dedup)
+python scripts/convert_bones_seed.py --categories "Gestures,Communication,Baseline" --output src/assets/data/g1/bones_seed.pkl
+
+# Custom target FPS
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --target-fps 60 --output src/assets/data/g1/bones_seed.pkl
+```
+
+Converts BONES-SEED CSV motion data (`/home/ubuntu/BONES-SEED`) to pkl format for the locomanipulation upper-body curriculum. Filters by category, optionally deduplicates by `content_short_description` (`--dedup`), and downsamples from source FPS (120) to target FPS (30). After conversion, run `check_motion_collisions.py --clean` to remove collision frames.
+
+**Available categories** (non-mirrored clip counts):
+
+| Category | Clips |
+|----------|------:|
+| Basic Locomotion Neutral | 16,729 |
+| Baseline | 11,440 |
+| Gestures | 8,797 |
+| Object Manipulation | 5,810 |
+| Dancing | 5,503 |
+| Object Interaction | 5,410 |
+| Basic Locomotion Styles | 5,373 |
+| Advanced Locomotion | 3,019 |
+| Sports | 1,988 |
+| Communication | 1,862 |
+| Unusual Locomotion | 1,621 |
+| Other | 1,041 |
+| Consuming | 694 |
+| Household | 659 |
+| Stunts | 429 |
+| Environments | 307 |
+| Complex Actions | 270 |
+| Looking and Pointing | 90 |
+| Magic | 80 |
+| Martial Arts | 10 |
+
 ### Check Motion Collisions
 
 ```bash
@@ -357,7 +417,7 @@ python scripts/check_motion_collisions.py --robot g1 --clean
 python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
 ```
 
-Checks self-collision statistics for ACCAD motion data. The `--clean` flag removes collision frames and saves a cleaned pkl file. Use `--show` for visual playback with MuJoCo viewer (enable contacts via viewer menu → Rendering → Contacts).
+Checks self-collision statistics for motion data (ACCAD, BONES-SEED, or any pkl in the expected format). The `--clean` flag removes collision frames and saves a cleaned pkl file. Use `--show` for visual playback with MuJoCo viewer (enable contacts via viewer menu → Rendering → Contacts).
 
 ## Robot-Specific Details
 
@@ -427,4 +487,5 @@ X2_GAIN_PRESETS = {
 | `scripts/eval.py` | Evaluation script |
 | `scripts/export_onnx.py` | ONNX export script |
 | `scripts/compute_height_postures.py` | IK posture computation |
+| `scripts/convert_bones_seed.py` | BONES-SEED CSV to pkl conversion |
 | `scripts/check_motion_collisions.py` | Collision checking/cleaning |

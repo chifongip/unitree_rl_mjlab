@@ -34,6 +34,18 @@ python scripts/check_motion_collisions.py --robot g1 --clean
 python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
 ```
 
+### Convert BONES-SEED Motion Data
+```bash
+# Default: Gestures, Communication, Baseline; dedup by description; downsample 120→30 FPS
+python scripts/convert_bones_seed.py --dedup --output src/assets/data/g1/bones_seed.pkl
+
+# Object Manipulation only
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+
+# Multiple categories
+python scripts/convert_bones_seed.py --categories "Gestures,Communication,Baseline,Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+```
+
 ## Architecture
 
 ### Locomanipulation Task
