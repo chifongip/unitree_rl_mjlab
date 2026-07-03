@@ -1,5 +1,6 @@
 from mjlab.envs.mdp import *  # noqa: F401, F403
 
+from .amp_events import init_motion_loader, reset_from_motion_data  # noqa: F401
 from .curriculums import *  # noqa: F403
 from .events import *  # noqa: F403
 from .symmetry import g1_locomanipulation_symmetry  # noqa: F401

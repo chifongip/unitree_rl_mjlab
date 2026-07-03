@@ -51,6 +51,87 @@ src/tasks/locomanipulation/
 | `Unitree-G1-23Dof-Locomanipulation-Flat` | G1 23-DOF | Flat | `G1_23DOF_LocomanipulationOnPolicyRunner` |
 | `Agibot-X2-Locomanipulation-Rough` | Agibot X2 | Rough | `LocomanipulationOnPolicyRunner` |
 | `Agibot-X2-Locomanipulation-Flat` | Agibot X2 | Flat | `LocomanipulationOnPolicyRunner` |
+| `Unitree-G1-Locomanipulation-AMP-Rough` | G1 29-DOF | Rough | `LocomanipulationAMPOnPolicyRunner` |
+| `Unitree-G1-Locomanipulation-AMP-Flat` | G1 29-DOF | Flat | `LocomanipulationAMPOnPolicyRunner` |
+
+## AMP (Adversarial Motion Priors)
+
+AMP adds a discriminator-based reward that encourages natural motion style learned from expert demonstrations. The discriminator distinguishes expert motion transitions from policy transitions, producing a shaped reward signal blended with the task reward.
+
+**Requires:** conda env `unitree_rl_mjlab_amp` with rsl_rl v6 (`pip install -e /home/ubuntu/rsl_rl`).
+
+### AMP Architecture
+
+```
+src/tasks/locomanipulation/
+├── locomanipulation_amp_env_cfg.py      # AMP env config factory (extends base)
+├── config/g1_amp/
+│   ├── __init__.py                      # AMP task registration
+│   ├── env_cfgs.py                      # G1 AMP-specific wiring
+│   └── rl_cfg.py                        # AMP runner config (AMPPPO)
+├── mdp/
+│   ├── amp_observations.py              # Body-relative obs for discriminator
+│   └── amp_events.py                    # MotionLoader + MotionResetManager
+└── rl/
+    └── amp_runner.py                    # LocomanipulationAMPOnPolicyRunner
+```
+
+### Design
+
+AMP tracks **7 lower-body bodies** (pelvis + 3 per leg), anchored to pelvis. Obs dim = 105. The policy controls 15 DOFs (12 leg + 3 waist); upper body is motion playback — AMP only evaluates what the policy controls.
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `amp_reward_coef` | 0.1 | AMP reward scale |
+| `amp_task_reward_lerp` | 0.75 | Blend ratio (75% task, 25% AMP) |
+| `amp_discr_hidden_dims` | [1024, 512, 256] | Discriminator MLP |
+| Tracked bodies | 7 | pelvis, L/R hip_roll, knee, ankle_roll |
+| Anchor | pelvis | Reference frame for relative obs |
+| Obs dim | 105 | 7 bodies × 15 (pos3 + ori6 + lin_vel3 + ang_vel3) |
+
+### Motion Data
+
+AMP uses NPZ motion files at `src/assets/motions/g1/amp/WalkandRun/` (17 clips, 50 FPS):
+
+| Clip | Type |
+|------|------|
+| walk_forward_loop_002__A022/A024 | Walk |
+| walk_backward_loop_001__A022/A024 | Walk |
+| walk_sideway_left/right | Walk |
+| walk_arc_cw_loop_002__A046 | Walk |
+| jog_forward_loop_003__A021/A022 | Jog |
+| jog_backward_loop_002/003 | Jog |
+| jog_arc_cw_loop_004__A045 | Jog |
+| arc_walk/jog_left_loop | Arc |
+| idle_turn_270/360 | Turn |
+| step_rotate_idle | Idle |
+
+### AMP Training
+
+```bash
+# Activate AMP env
+conda activate unitree_rl_mjlab_amp
+
+# G1 AMP, flat terrain
+python scripts/train.py Unitree-G1-Locomanipulation-AMP-Flat --env.scene.num-envs=4096 --agent.logger=tensorboard
+
+# G1 AMP, rough terrain
+python scripts/train.py Unitree-G1-Locomanipulation-AMP-Rough --env.scene.num-envs=4096 --agent.logger=tensorboard
+```
+
+### AMP Losses
+
+The training logs include AMP-specific losses:
+
+| Loss | Description |
+|------|-------------|
+| `amp` | Discriminator MSE loss (expert→+1, policy→-1) |
+| `amp_grad_pen` | Gradient penalty for Lipschitz regularization |
+| `amp_policy_pred` | Mean discriminator output on policy transitions |
+| `amp_expert_pred` | Mean discriminator output on expert transitions |
+| `symmetry` | Mirror loss (left-right augmentation) |
+
+If `amp_policy_pred` converges to 0, the discriminator is too strong. If both converge to 0, training is unstable — reduce `amp_reward_coef` or increase `amp_replay_buffer_size`.
 
 ## Key Design Decisions
 
@@ -472,16 +553,22 @@ X2_GAIN_PRESETS = {
 | File | Purpose |
 |------|---------|
 | `src/tasks/locomanipulation/locomanipulation_env_cfg.py` | Base config factory |
+| `src/tasks/locomanipulation/locomanipulation_amp_env_cfg.py` | AMP config factory |
 | `src/tasks/locomanipulation/config/g1/env_cfgs.py` | G1 29-DOF config |
 | `src/tasks/locomanipulation/config/g1_23dof/env_cfgs.py` | G1 23-DOF config |
 | `src/tasks/locomanipulation/config/x2/env_cfgs.py` | Agibot X2 config |
+| `src/tasks/locomanipulation/config/g1_amp/env_cfgs.py` | G1 AMP config |
+| `src/tasks/locomanipulation/config/g1_amp/rl_cfg.py` | AMP runner config |
 | `src/tasks/locomanipulation/mdp/events.py` | HandForceEvent + MaxForceEstimator |
 | `src/tasks/locomanipulation/mdp/rewards.py` | All reward functions |
 | `src/tasks/locomanipulation/mdp/symmetry.py` | Symmetry augmentation |
 | `src/tasks/locomanipulation/mdp/upper_body_action.py` | Motion playback |
 | `src/tasks/locomanipulation/mdp/height_command.py` | Base height command |
 | `src/tasks/locomanipulation/mdp/waist_yaw_command.py` | Waist yaw command |
+| `src/tasks/locomanipulation/mdp/amp_observations.py` | AMP body-relative obs |
+| `src/tasks/locomanipulation/mdp/amp_events.py` | AMP motion loader + reset |
 | `src/tasks/locomanipulation/rl/runner.py` | OnPolicy runners with ONNX export |
+| `src/tasks/locomanipulation/rl/amp_runner.py` | AMP runner with ONNX export |
 | `scripts/train.py` | Training script |
 | `scripts/play.py` | Visualization script |
 | `scripts/eval.py` | Evaluation script |

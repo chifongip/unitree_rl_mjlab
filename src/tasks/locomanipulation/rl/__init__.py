@@ -3,3 +3,10 @@ from .runner import (
   LocomanipulationOnPolicyRunner as LocomanipulationOnPolicyRunner,
   X2_LocomanipulationOnPolicyRunner as X2_LocomanipulationOnPolicyRunner,
 )
+
+try:
+  from .amp_runner import (
+    LocomanipulationAMPOnPolicyRunner as LocomanipulationAMPOnPolicyRunner,
+  )
+except ImportError:
+  LocomanipulationAMPOnPolicyRunner = None  # type: ignore[assignment,misc]

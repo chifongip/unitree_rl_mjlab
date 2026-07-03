@@ -8,6 +8,7 @@ Locomanipulation RL project for G1 (29-DOF, 23-DOF) and Agibot X2 humanoids on [
 - `Unitree-G1-Locomanipulation-Rough/Flat`
 - `Unitree-G1-23Dof-Locomanipulation-Rough/Flat`
 - `Agibot-X2-Locomanipulation-Rough/Flat`
+- `Unitree-G1-Locomanipulation-AMP-Rough/Flat` (requires conda env `unitree_rl_mjlab_amp`)
 
 ## Commands
 
@@ -15,6 +16,13 @@ Locomanipulation RL project for G1 (29-DOF, 23-DOF) and Agibot X2 humanoids on [
 ```bash
 conda create -n unitree_rl_mjlab python=3.11 && conda activate unitree_rl_mjlab
 pip install -e .
+```
+
+### Setup (AMP)
+```bash
+conda create -n unitree_rl_mjlab_amp python=3.11 && conda activate unitree_rl_mjlab_amp
+pip install -e .                        # reinstalls project (rsl_rl v6 stays)
+pip install -e /home/ubuntu/rsl_rl      # rsl_rl v6 with AMP support
 ```
 
 ### Train / Play / Eval / Export
@@ -78,6 +86,22 @@ Policy controls lower-body + waist DOFs. Upper body driven by `UpperBodyMotionAc
 - **`preserve_order=False`**: `SceneEntityCfg.resolve()` returns joints in MJCF natural order, not pattern order. `actuator_names` pattern order is irrelevant.
 - **Motion data columns**: G1 ACCAD data is in G1 joint order. X2 AMASS data is in X2 joint order. `motion_dof_indices` must match the data's column layout.
 - **X2 MJCF**: `x2_ultra_no_head.xml` — head body kept (visual + collision), joints removed. No uncontrolled DOFs.
+- **rsl_rl v6 AMP PPO symmetry bug**: `update()` must augment batch BEFORE actor forward pass (not after). Fixed in `/home/ubuntu/rsl_rl`.
+- **Symmetry functions need `**kwargs`**: rsl_rl v6 calls symmetry functions with `obs_type=` kwarg. Added `**kwargs` to all symmetry function signatures in `mdp/symmetry.py`.
+
+### AMP Locomanipulation
+AMP (Adversarial Motion Priors) adds a discriminator-based reward that encourages natural motion style learned from expert demonstrations. Requires rsl_rl v6 (`/home/ubuntu/rsl_rl`).
+
+**Architecture:** AMP has its own config layer, separate from base locomanipulation:
+- `locomanipulation_amp_env_cfg.py` — extends base with AMP obs group + motion reset events
+- `config/g1_amp/` — G1-specific AMP wiring, rewards, curricula, task registration
+- `mdp/amp_observations.py` — body-relative obs functions (pos, ori, vel in anchor frame)
+- `mdp/amp_events.py` — MotionLoader + MotionResetManager for env resets from motion data
+- `rl/amp_runner.py` — LocomanipulationAMPOnPolicyRunner (config adaptation, symmetry, ONNX export)
+
+**Design:** AMP tracks 7 lower-body bodies (pelvis + 3 per leg), anchor = pelvis, obs_dim = 105. Policy controls 15 DOFs; upper body is motion playback — AMP only evaluates what the policy controls. `amp_task_reward_lerp=0.75` (75% task reward, 25% AMP discriminator).
+
+**Motion data:** `src/assets/motions/g1/amp/WalkandRun/` — 17 NPZ clips (walk, jog, arc, sideway, turn, idle), 50 FPS.
 
 ## Testing
 ```bash

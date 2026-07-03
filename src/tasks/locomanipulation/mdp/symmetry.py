@@ -479,6 +479,7 @@ def g1_locomanipulation_symmetry(
   env: RslRlVecEnvWrapper,
   obs: dict[str, torch.Tensor] | None,
   actions: torch.Tensor | None,
+  **kwargs,
 ) -> tuple[dict[str, torch.Tensor] | None, torch.Tensor | None]:
   """Left-right symmetry augmentation for G1 locomanipulation.
 
@@ -525,6 +526,7 @@ def x2_locomanipulation_symmetry(
   env: RslRlVecEnvWrapper,
   obs: dict[str, torch.Tensor] | None,
   actions: torch.Tensor | None,
+  **kwargs,
 ) -> tuple[dict[str, torch.Tensor] | None, torch.Tensor | None]:
   """Left-right symmetry augmentation for X2 locomanipulation.
 
@@ -564,6 +566,7 @@ def g1_23dof_locomanipulation_symmetry(
   env: RslRlVecEnvWrapper,
   obs: dict[str, torch.Tensor] | None,
   actions: torch.Tensor | None,
+  **kwargs,
 ) -> tuple[dict[str, torch.Tensor] | None, torch.Tensor | None]:
   """Left-right symmetry augmentation for G1 23-DOF locomanipulation.
 
