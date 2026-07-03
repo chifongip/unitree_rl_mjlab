@@ -31,19 +31,19 @@ python scripts/export_onnx.py <TaskName> --checkpoint-file logs/.../model_20000.
 ### Check Motion Collisions
 ```bash
 python scripts/check_motion_collisions.py --robot g1 --clean
-python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
+python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass/amass_all.pkl --clean
 ```
 
 ### Convert BONES-SEED Motion Data
 ```bash
 # Default: Gestures, Communication, Baseline; dedup by description; downsample 120→30 FPS
-python scripts/convert_bones_seed.py --dedup --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --dedup --output src/assets/data/g1/bones_seed/bones_seed.pkl
 
 # Object Manipulation only
-python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed/bones_seed.pkl
 
 # Multiple categories
-python scripts/convert_bones_seed.py --categories "Gestures,Communication,Baseline,Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --categories "Gestures,Communication,Baseline,Object Manipulation" --dedup --output src/assets/data/g1/bones_seed/bones_seed.pkl
 ```
 
 ## Architecture
@@ -64,7 +64,7 @@ Policy controls lower-body + waist DOFs. Upper body driven by `UpperBodyMotionAc
 | Wrist order | roll/pitch/yaw | roll only | yaw/pitch/roll |
 | Arm joints | 14 (7/arm) | 10 (5/arm) | 14 (7/arm) |
 | Symmetry class | `G1Symmetry` (29) | `G1_23DOFSymmetry` (23) | `X2Symmetry` (29) |
-| Motion data | `accad_all.pkl` | `accad_all.pkl` | `amass_all.pkl` |
+| Motion data | `accad/accad_all.pkl` | `accad/accad_all.pkl` | `amass/amass_all.pkl` |
 | `motion_dof_indices` | (15,16,17,18,19,20,21,22,23,24,25,26,27,28) | (15,16,17,18,19,22,23,24,25,26) | (15,16,17,18,19,20,21,22,23,24,25,26,27,28) |
 | Nominal height | 0.76m | 0.76m | 0.66m |
 | Foot geoms | 7/foot | 7/foot | 7/foot |

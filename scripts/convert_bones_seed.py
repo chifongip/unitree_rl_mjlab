@@ -14,7 +14,7 @@ Usage:
 Options:
     --bones-seed-dir  Path to BONES-SEED dataset (default: /home/ubuntu/BONES-SEED)
     --categories      Comma-separated categories (default: Gestures,Communication,Baseline)
-    --output          Output pkl path (default: src/assets/data/g1/bones_seed.pkl)
+    --output          Output pkl path (default: src/assets/data/g1/bones_seed/bones_seed.pkl)
     --source-fps      Source FPS of CSV data (default: 120)
     --target-fps      Target FPS after downsampling (default: 30)
     --dedup           Keep one random clip per motion description
@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("src/assets/data/g1/bones_seed.pkl"),
+        default=Path("src/assets/data/g1/bones_seed/bones_seed.pkl"),
         help="Output pkl path",
     )
     parser.add_argument(

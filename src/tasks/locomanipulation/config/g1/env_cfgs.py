@@ -136,13 +136,18 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     r"waist_pitch_joint",
   )
 
-  # Upper-body motion playback from ACCAD dataset.
-  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "accad_all.pkl")
+  # Upper-body motion playback from BONES-SEED.
+  # Standing envs → manipulation gestures (bones_seed/bones_seed.pkl).
+  # Walking envs → coordinated locomotion arm swing (bones_seed/bones_seed_locomotion.pkl).
+  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "bones_seed" / "bones_seed_g1_split.pkl")
+  loco_motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "bones_seed" / "bones_seed_locomotion_g1_split.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
+    locomotion_motion_file=loco_motion_file,
     motion_dof_indices=MOTION_DOF_INDICES,
     default_pose_ratio=1.0,
+    command_threshold=0.1,
     waist_yaw_only=True,
     exclude_waist=True,
     pose_only=False,

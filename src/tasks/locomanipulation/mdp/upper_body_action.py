@@ -67,14 +67,24 @@ class UpperBodyMotionAction(ActionTerm):
       self._waist_zero_cols = []
 
     # Load motion data and extract upper-body DOF.
-    data = joblib.load(cfg.motion_file)
-    raw_clips: list[torch.Tensor] = []
-    self._fps: int = 0
     dof_indices = list(cfg.motion_dof_indices) if cfg.motion_dof_indices is not None else None
-    for v in data.values():
-      dof = torch.tensor(v["dof"], dtype=torch.float32)
-      raw_clips.append(dof[:, dof_indices] if dof_indices is not None else dof[:, 12:29])
-      self._fps = v["fps"]
+
+    manip_clips, self._fps = self._load_motion_file(cfg.motion_file, dof_indices)
+    self._num_manip_clips = len(manip_clips)
+
+    # Optional second pool for locomotion clips (command-driven mixing).
+    self._has_loco_dataset = cfg.locomotion_motion_file is not None
+    if self._has_loco_dataset:
+      loco_clips, loco_fps = self._load_motion_file(cfg.locomotion_motion_file, dof_indices)
+      if loco_fps != self._fps:
+        raise ValueError(
+          f"locomotion_motion_file FPS ({loco_fps}) must match motion_file FPS ({self._fps})"
+        )
+      self._num_loco_clips = len(loco_clips)
+      raw_clips = manip_clips + loco_clips
+    else:
+      self._num_loco_clips = 0
+      raw_clips = manip_clips
 
     self._num_upper_dofs = len(self._joint_ids)
 
@@ -97,6 +107,9 @@ class UpperBodyMotionAction(ActionTerm):
     self._clip_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self._start_frame = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
+    # Deferred selection flag for dual-dataset mode.
+    self._pending_selection = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
     # Cached single-frame target for pose_only mode.
     self._pose_target = torch.zeros(self.num_envs, self._num_upper_dofs, device=self.device)
 
@@ -116,6 +129,57 @@ class UpperBodyMotionAction(ActionTerm):
       if self._waist_zero_cols:
         fixed[self._waist_zero_cols] = 0.0
       self._fixed_pose = fixed  # (num_upper_dofs,)
+
+  @staticmethod
+  def _load_motion_file(path: str, dof_indices: list[int] | None) -> tuple[list[torch.Tensor], int]:
+    """Load a pkl motion file and return (clips_list, fps)."""
+    data = joblib.load(path)
+    clips: list[torch.Tensor] = []
+    fps: int = 0
+    for v in data.values():
+      dof = torch.tensor(v["dof"], dtype=torch.float32)
+      clips.append(dof[:, dof_indices] if dof_indices is not None else dof[:, 12:29])
+      fps = v["fps"]
+    return clips, fps
+
+  def _select_clips(self, env_ids: torch.Tensor) -> None:
+    """Select motion clips for the given envs based on current velocity command.
+
+    Standing envs (vel norm < threshold) get manipulation clips (indices
+    0.._num_manip_clips-1). Walking envs get locomotion clips (indices
+    _num_manip_clips.._num_clips-1).
+    """
+    twist_term = self._env.command_manager.get_term("twist")
+    vel = twist_term.vel_command_b[env_ids]
+    standing_flag = twist_term.is_standing_env[env_ids]
+
+    vel_norm = torch.norm(vel, dim=1)
+    is_standing = (vel_norm < self.cfg.command_threshold) | standing_flag
+
+    count = len(env_ids)
+    rand_clips = torch.empty(count, dtype=torch.long, device=self.device)
+
+    standing_mask = is_standing.nonzero(as_tuple=False).flatten()
+    walking_mask = (~is_standing).nonzero(as_tuple=False).flatten()
+
+    if len(standing_mask) > 0:
+      rand_clips[standing_mask] = torch.randint(
+        0, self._num_manip_clips, (len(standing_mask),), device=self.device
+      )
+    if len(walking_mask) > 0:
+      rand_clips[walking_mask] = torch.randint(
+        0, self._num_loco_clips, (len(walking_mask),), device=self.device
+      ) + self._num_manip_clips
+
+    clip_lens = self._clip_lengths[rand_clips]
+    rand_starts = (torch.rand(count, device=self.device) * clip_lens.float()).long()
+
+    # Apply default_pose_ratio: substitute default pose for some envs.
+    use_default = torch.rand(count, device=self.device) < self.cfg.default_pose_ratio
+    rand_clips[use_default] = -1  # sentinel for default pose
+
+    self._clip_idx[env_ids] = rand_clips
+    self._start_frame[env_ids] = rand_starts
 
   @property
   def action_dim(self) -> int:
@@ -153,6 +217,17 @@ class UpperBodyMotionAction(ActionTerm):
       else:
         self._entity._data.joint_pos_target[env_ids.unsqueeze(1), self._joint_ids] = targets
         self._pose_target[env_ids] = targets
+      return
+
+    # Dual-dataset mode: defer clip selection to first _gather_targets
+    # call so the velocity command (sampled by command_manager.reset after
+    # action_manager.reset) is available for the standing/walking decision.
+    if self._has_loco_dataset:
+      if isinstance(env_ids, slice):
+        self._pending_selection[:] = True
+      else:
+        self._pending_selection[env_ids] = True
+      # use default pose as placeholder until _gather_targets selects real clips.
       return
 
     # Sample random clips and start frames (vectorized).
@@ -224,6 +299,22 @@ class UpperBodyMotionAction(ActionTerm):
     """Compute upper-body targets for the given envs."""
     if env_ids is None:
       env_ids = slice(None)
+
+    # Deferred clip selection for newly-reset envs in dual-dataset mode.
+    # Runs before target computation so the correct dataset is used.
+    if self._has_loco_dataset:
+      if isinstance(env_ids, slice):
+        pending_mask = self._pending_selection
+      else:
+        pending_mask = self._pending_selection[env_ids]
+      if pending_mask.any():
+        pending_rel = pending_mask.nonzero(as_tuple=False).flatten()
+        if isinstance(env_ids, slice):
+          actual_ids = pending_rel
+        else:
+          actual_ids = env_ids[pending_rel]
+        self._select_clips(actual_ids)
+        self._pending_selection[actual_ids] = False
 
     # Fixed pose or pose_only mode: return the cached target (already includes
     # default pose substitution and waist zeroing from reset).
@@ -310,10 +401,26 @@ class UpperBodyMotionAction(ActionTerm):
 
 @dataclass(kw_only=True)
 class UpperBodyMotionActionCfg(ActionTermCfg):
-  """Configuration for upper-body motion playback."""
+  """Configuration for upper-body motion playback.
+
+  When ``locomotion_motion_file`` is set, the action maintains two motion
+  pools and selects clips based on the current velocity command: standing
+  envs use ``motion_file`` (manipulation gestures), walking envs use
+  ``locomotion_motion_file`` (coordinated locomotion arm swing).
+  """
 
   motion_file: str = ""
-  """Path to the pkl motion file."""
+  """Path to the pkl motion file (standing / manipulation data when
+  locomotion_motion_file is set)."""
+
+  locomotion_motion_file: str | None = None
+  """Optional path to a second motion pkl used when the velocity command
+  norm exceeds ``command_threshold``. When None, only ``motion_file`` is
+  used (backward compatible)."""
+
+  command_threshold: float = 0.1
+  """Velocity command L2 norm threshold. Below → standing (motion_file).
+  At or above → walking (locomotion_motion_file)."""
 
   motion_dof_indices: tuple[int, ...] | None = None
   """Indices into the motion data's DOF array to extract upper-body joints.

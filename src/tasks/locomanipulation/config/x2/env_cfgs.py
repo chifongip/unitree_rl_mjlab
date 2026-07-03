@@ -137,7 +137,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   )
 
   # Upper-body motion playback from cleaned AMASS data.
-  motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "amass_all.pkl")
+  motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "amass" / "amass_all.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,

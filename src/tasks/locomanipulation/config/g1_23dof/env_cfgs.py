@@ -130,14 +130,19 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     r"waist_yaw_joint",
   )
 
-  # Upper-body motion playback from ACCAD dataset.
+  # Upper-body motion playback from BONES-SEED.
+  # Standing envs → manipulation gestures (bones_seed/bones_seed.pkl).
+  # Walking envs → coordinated locomotion arm swing (bones_seed/bones_seed_locomotion.pkl).
   # motion_dof_indices remaps 29-DOF motion data to 23-DOF joint layout.
-  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "accad_all.pkl")
+  motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "bones_seed" / "bones_seed_g1_23dof_split.pkl")
+  loco_motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "bones_seed" / "bones_seed_locomotion_g1_23dof_split.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
+    locomotion_motion_file=loco_motion_file,
     motion_dof_indices=MOTION_DOF_INDICES_23DOF,
     default_pose_ratio=1.0,
+    command_threshold=0.1,
     waist_yaw_only=True,
     exclude_waist=True,
     pose_only=False,

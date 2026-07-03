@@ -3,28 +3,36 @@
 Loads motion data (pkl) and runs MuJoCo collision detection to count how many
 frames produce self-collisions. Unnamed geoms fall back to parent body names.
 
+Can also clean the data: drop individual collision frames (``--clean``) or
+split clips at collision boundaries into contiguous clean segments (``--split``).
+
 Robots: g1_23dof (default), g1, x2.
 
 Usage:
     python scripts/check_motion_collisions.py --robot <robot> --motion-file <path> [options]
 
 Options:
-    --robot         Robot variant (default: g1_23dof)
-    --motion-file   Path to motion pkl (default: G1 ACCAD data)
-    --show          Open MuJoCo viewer for visual playback
-    --clip <str>    Filter to clips containing this substring
-    --collision-only  Only show collision frames (with --show)
-    --clean         Remove collision frames and save cleaned data
+    --robot            Robot variant (default: g1_23dof)
+    --motion-file      Path to motion pkl (default: G1 ACCAD data)
+    --show             Open MuJoCo viewer for visual playback
+    --clip <str>       Filter to clips containing this substring
+    --collision-only   Only show collision frames (with --show)
+    --clean            Remove collision frames and save cleaned data
+    --split            Split clips at collision boundaries into clean segments
+    --min-segment-len  Minimum segment length in frames for --split (default: 60)
 
 Examples:
     # Headless scan
-    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl
+    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass/amass_all.pkl
 
     # Visual playback
-    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --show
+    python scripts/check_motion_collisions.py --robot g1 --motion-file src/assets/data/g1/bones_seed/bones_seed_locomotion.pkl --show
 
-    # Clean and save
-    python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
+    # Drop collision frames (creates temporal gaps)
+    python scripts/check_motion_collisions.py --robot g1_23dof --motion-file src/assets/data/g1/bones_seed/bones_seed_locomotion.pkl --clean
+
+    # Split into clean segments (preserves continuity, 0 collisions)
+    python scripts/check_motion_collisions.py --robot g1_23dof --motion-file src/assets/data/g1/bones_seed/bones_seed_locomotion.pkl --split --min-segment-len 60
 """
 
 import argparse
@@ -134,7 +142,7 @@ DEFAULT_LOWER_BODY = {
     "left_ankle_roll_joint": 0.0, "right_ankle_roll_joint": 0.0,
 }
 
-MOTION_FILE = Path(__file__).resolve().parent.parent / "src" / "assets" / "data" / "g1" / "accad_all.pkl"
+MOTION_FILE = Path(__file__).resolve().parent.parent / "src" / "assets" / "data" / "g1" / "accad" / "accad_all.pkl"
 
 
 def build_qpos_index(model, joint_names: list[str]):
@@ -174,6 +182,7 @@ def set_frame(data, qpos_idx, joint_names: list[str], lower_body_dof, upper_body
 
 def extract_dof(dof: np.ndarray, motion_dof_indices: tuple[int, ...] | None):
     """Extract lower and upper body DOFs from motion data."""
+    assert dof.shape[1] >= 12, f"Motion data has {dof.shape[1]} columns, expected ≥12"
     lower = dof[:, :12]
     if motion_dof_indices is not None:
         upper = dof[:, list(motion_dof_indices)]
@@ -204,7 +213,67 @@ def check_collision(model, data):
     return pairs
 
 
-def run_headless(robot_cfg: RobotConfig, motion_file: Path, clean: bool = False):
+def split_clean_segments(
+    motion_data: dict,
+    collision_masks: dict[str, np.ndarray],
+    min_len: int = 60,
+) -> dict:
+    """Split clips at collision boundaries, keeping clean segments as new clips.
+
+    Each contiguous collision-free segment ≥ min_len frames becomes its own
+    clip named ``{original_clip}__seg{N}``. This preserves temporal continuity
+    within each segment — no interpolation or frame dropping occurs.
+
+    Args:
+        motion_data: Original motion data dict.
+        collision_masks: Per-clip boolean array (True = collision frame).
+        min_len: Minimum segment length in frames.
+
+    Returns:
+        Dict of clean segments with same value structure.
+    """
+    segments: dict = {}
+    total_orig = 0
+    total_clean = 0
+
+    for clip_name, clip_data in motion_data.items():
+        mask = collision_masks[clip_name]
+        dof = np.array(clip_data["dof"], dtype=np.float32)
+        n_frames = len(mask)
+        total_orig += n_frames
+
+        clean = ~mask
+        padded = np.concatenate([[False], clean, [False]])
+        changes = np.diff(padded.astype(int))
+        starts = np.where(changes == 1)[0]
+        ends = np.where(changes == -1)[0]
+
+        for i, (s, e) in enumerate(zip(starts, ends)):
+            seg_len = e - s
+            if seg_len >= min_len:
+                seg_name = f"{clip_name}__seg{i}"
+                segments[seg_name] = {
+                    "dof": dof[s:e].astype(np.float32),
+                    "fps": clip_data["fps"],
+                }
+                total_clean += seg_len
+
+    removed = total_orig - total_clean
+    pct_removed = removed / total_orig * 100 if total_orig > 0 else 0
+    print(f"\nSplit cleaning (min segment={min_len}f): "
+          f"{len(motion_data):,} clips → {len(segments):,} segments "
+          f"({total_orig:,} → {total_clean:,} frames, {removed:,} removed, {pct_removed:.1f}%)")
+
+    return segments
+
+
+def run_headless(
+    robot_cfg: RobotConfig,
+    motion_file: Path,
+    clean: bool = False,
+    split: bool = False,
+    min_segment_len: int = 60,
+):
     """Headless scan: check all frames and print statistics."""
     spec = robot_cfg.spec_fn()
     model = spec.compile()
@@ -216,41 +285,28 @@ def run_headless(robot_cfg: RobotConfig, motion_file: Path, clean: bool = False)
     total_frames = 0
     total_collision_frames = 0
     global_pair_clips: dict[str, set[str]] = {}
-    clean_frames: dict[str, list[int]] = {}
+    collision_masks: dict[str, np.ndarray] = {}
 
     for clip_name, clip_data in motion_data.items():
         dof = np.array(clip_data["dof"])
         n_frames = dof.shape[0]
         lower_body, upper_body = extract_dof(dof, robot_cfg.motion_dof_indices)
 
-        clip_collision_frames = 0
-        collision_details: dict[str, list[int]] = {}
-        clip_clean = []
+        clip_mask = np.zeros(n_frames, dtype=bool)
 
         for f in range(n_frames):
             set_frame(data, qpos_idx, robot_cfg.joint_names, lower_body[f], upper_body[f],
                       default_height=robot_cfg.default_height)
             pairs = check_collision(model, data)
             if pairs:
-                clip_collision_frames += 1
+                clip_mask[f] = True
                 for pair in pairs:
                     key = f"{pair[0]} <-> {pair[1]}"
-                    collision_details.setdefault(key, []).append(f)
                     global_pair_clips.setdefault(key, set()).add(clip_name)
-            else:
-                clip_clean.append(f)
 
         total_frames += n_frames
-        total_collision_frames += clip_collision_frames
-        clean_frames[clip_name] = clip_clean
-
-        pct = clip_collision_frames / n_frames * 100 if n_frames > 0 else 0
-        print(f"Clip: {clip_name}")
-        print(f"  Frames: {n_frames}, Collisions: {clip_collision_frames} ({pct:.1f}%)")
-        if collision_details:
-            for pair, frames in collision_details.items():
-                print(f"  {pair}: {len(frames)} frames")
-        print()
+        total_collision_frames += clip_mask.sum()
+        collision_masks[clip_name] = clip_mask
 
     pct = total_collision_frames / total_frames * 100 if total_frames > 0 else 0
     print(f"Overall: {total_frames} frames, {total_collision_frames} collisions ({pct:.2f}%)")
@@ -258,28 +314,38 @@ def run_headless(robot_cfg: RobotConfig, motion_file: Path, clean: bool = False)
     if global_pair_clips:
         _print_summary_table(global_pair_clips)
 
-    if clean:
-        print()
-        print("Cleaning motion data...")
-        cleaned = {}
-        total_clean = 0
-        for clip_name, clip_data in motion_data.items():
-            idx = clean_frames[clip_name]
-            n_orig = np.array(clip_data["dof"]).shape[0]
-            n_clean = len(idx)
-            removed = n_orig - n_clean
-            total_clean += n_clean
-            print(f"  {clip_name}: {n_orig} -> {n_clean} frames ({removed} removed)")
-            cleaned[clip_name] = {
-                "dof": np.array(clip_data["dof"])[idx],
-                "fps": clip_data["fps"],
-            }
+    if clean or split:
+        if split:
+            print()
+            print(f"Splitting at collision boundaries (min segment={min_segment_len}f)...")
+            cleaned = split_clean_segments(motion_data, collision_masks, min_segment_len)
+            suffix = f"{robot_cfg.name}_split"
+        else:
+            print()
+            print("Cleaning motion data (dropping collision frames)...")
+            cleaned = {}
+            total_clean = 0
+            dropped_empty = 0
+            for clip_name, clip_data in motion_data.items():
+                keep = ~collision_masks[clip_name]
+                n_clean = keep.sum()
+                if n_clean == 0:
+                    dropped_empty += 1
+                    continue
+                total_clean += n_clean
+                cleaned[clip_name] = {
+                    "dof": np.array(clip_data["dof"])[keep],
+                    "fps": clip_data["fps"],
+                }
+            total_removed = total_frames - total_clean
+            pct_removed = total_removed / total_frames * 100 if total_frames > 0 else 0
+            print(f"  Overall: {total_frames:,} -> {total_clean:,} frames "
+                  f"({total_removed:,} removed, {pct_removed:.1f}%)")
+            if dropped_empty > 0:
+                print(f"  ({dropped_empty} fully-colliding clips dropped)")
+            suffix = f"{robot_cfg.name}_clean"
 
-        total_removed = total_frames - total_clean
-        pct_removed = total_removed / total_frames * 100 if total_frames > 0 else 0
-        print(f"\n  Overall: {total_frames} -> {total_clean} frames ({total_removed} removed, {pct_removed:.2f}%)")
-
-        out_path = motion_file.parent / f"{motion_file.stem}_{robot_cfg.name}_clean.pkl"
+        out_path = motion_file.parent / f"{motion_file.stem}_{suffix}.pkl"
         joblib.dump(cleaned, out_path)
         print(f"  Saved to: {out_path}")
 
@@ -405,15 +471,28 @@ def main():
     parser.add_argument("--show", action="store_true", help="Open MuJoCo viewer for visual inspection")
     parser.add_argument("--clip", type=str, default=None, help="Filter to clips containing this substring")
     parser.add_argument("--collision-only", action="store_true", help="Only show collision frames (with --show)")
-    parser.add_argument("--clean", action="store_true", help="Remove collision frames and save cleaned data")
+    clean_split = parser.add_mutually_exclusive_group()
+    clean_split.add_argument("--clean", action="store_true",
+                             help="Remove collision frames and save cleaned data")
+    clean_split.add_argument("--split", action="store_true",
+                             help="Split clips at collision boundaries, keeping clean segments as separate clips")
+    parser.add_argument("--min-segment-len", type=int, default=60,
+                        help="Minimum clean segment length in frames for --split (default: 60)")
     args = parser.parse_args()
+
+    if args.min_segment_len <= 0:
+        parser.error("--min-segment-len must be > 0")
+    if args.min_segment_len != 60 and not args.split:
+        print("Warning: --min-segment-len is only used with --split, ignoring")
+
 
     robot_cfg = ROBOT_CONFIGS[args.robot]()
 
     if args.show:
         run_show(args, robot_cfg)
     else:
-        run_headless(robot_cfg, args.motion_file, clean=args.clean)
+        run_headless(robot_cfg, args.motion_file, clean=args.clean,
+                     split=args.split, min_segment_len=args.min_segment_len)
 
 
 if __name__ == "__main__":

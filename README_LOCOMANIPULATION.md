@@ -67,17 +67,17 @@ The `default_pose_ratio` curriculum gradually transitions from HOME_KEYFRAME to 
 
 | Source | Clips | FPS | Path |
 |--------|-------|-----|------|
-| ACCAD | 252 | 30 | `src/assets/data/g1/accad_all.pkl` |
-| BONES-SEED | ~1,256 (Object Manipulation) | 30 | `src/assets/data/g1/bones_seed.pkl` |
+| ACCAD | 252 | 30 | `src/assets/data/g1/accad/accad_all.pkl` |
+| BONES-SEED | ~1,256 (Object Manipulation) | 30 | `src/assets/data/g1/bones_seed/bones_seed.pkl` |
 
 BONES-SEED is generated from the `/home/ubuntu/BONES-SEED` dataset (120 FPS source) using `scripts/convert_bones_seed.py`. The script filters by category, deduplicates by motion description, and downsamples to 30 FPS. After conversion, run `check_motion_collisions.py --clean` to remove collision frames.
 
 ```bash
 # Generate BONES-SEED pkl (Object Manipulation, deduped, 30 FPS)
-python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed/bones_seed.pkl
 
 # Collision-clean
-python scripts/check_motion_collisions.py --robot g1 --motion-file src/assets/data/g1/bones_seed.pkl --clean
+python scripts/check_motion_collisions.py --robot g1 --motion-file src/assets/data/g1/bones_seed/bones_seed.pkl --clean
 ```
 
 ### External Force Curriculum
@@ -360,16 +360,16 @@ Computes IK-based joint postures for G1 at different standing heights (0.50m–0
 
 ```bash
 # Default: Gestures, Communication, Baseline; dedup by description; downsample 120→30 FPS
-python scripts/convert_bones_seed.py --dedup --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --dedup --output src/assets/data/g1/bones_seed/bones_seed.pkl
 
 # Object Manipulation only
-python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --output src/assets/data/g1/bones_seed/bones_seed.pkl
 
 # Multiple categories, keep all actors (no dedup)
-python scripts/convert_bones_seed.py --categories "Gestures,Communication,Baseline" --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --categories "Gestures,Communication,Baseline" --output src/assets/data/g1/bones_seed/bones_seed.pkl
 
 # Custom target FPS
-python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --target-fps 60 --output src/assets/data/g1/bones_seed.pkl
+python scripts/convert_bones_seed.py --categories "Object Manipulation" --dedup --target-fps 60 --output src/assets/data/g1/bones_seed/bones_seed.pkl
 ```
 
 Converts BONES-SEED CSV motion data (`/home/ubuntu/BONES-SEED`) to pkl format for the locomanipulation upper-body curriculum. Filters by category, optionally deduplicates by `content_short_description` (`--dedup`), and downsamples from source FPS (120) to target FPS (30). After conversion, run `check_motion_collisions.py --clean` to remove collision frames.
@@ -414,7 +414,7 @@ python scripts/check_motion_collisions.py --show
 # Remove collision frames and save cleaned data
 python scripts/check_motion_collisions.py --robot g1_23dof --clean
 python scripts/check_motion_collisions.py --robot g1 --clean
-python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass_all.pkl --clean
+python scripts/check_motion_collisions.py --robot x2 --motion-file src/assets/data/x2/amass/amass_all.pkl --clean
 ```
 
 Checks self-collision statistics for motion data (ACCAD, BONES-SEED, or any pkl in the expected format). The `--clean` flag removes collision frames and saves a cleaned pkl file. Use `--show` for visual playback with MuJoCo viewer (enable contacts via viewer menu → Rendering → Contacts).
@@ -442,7 +442,7 @@ All configs also define `LOWER_BODY_JOINT_NAMES`, `LOWER_BODY_JOINT_PATTERNS`, a
 | Nominal height | 0.76m | 0.76m | 0.66m |
 | Upper-body DOFs | 14 (7/arm) | 10 (5/arm) | 14 (7/arm) |
 | Wrist bodies | `wrist_yaw_link` | `wrist_roll_rubber_hand` | `wrist_yaw_link` |
-| Motion data | `accad_all.pkl` | `accad_all_g1_23dof_clean.pkl` | `amass_all.pkl` |
+| Motion data | `accad/accad_all.pkl` | `accad/accad_all_g1_23dof_clean.pkl` | `amass/amass_all.pkl` |
 | Height postures | `postures.py` | `postures.py` | `postures_x2.py` |
 | Gain presets | `G1_GAIN_PRESETS` | `G1_23DOF_GAIN_PRESETS` | `X2_GAIN_PRESETS` |
 | Symmetry | `G1Symmetry` | `G1_23DOFSymmetry` | `X2Symmetry` |
