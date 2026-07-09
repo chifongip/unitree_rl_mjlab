@@ -365,7 +365,7 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
     cfg.events["hand_force"].params["no_force_ratio"] = 0.0
     cfg.events["hand_force"].params["force_scale"] = 1.0
     cfg.events["hand_force"].params["force_range_max"] = {
-        "x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-40.0, 0.0),
+      "x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-40.0, 0.0),
     }
 
     cfg.events["randomize_terrain"] = EventTermCfg(

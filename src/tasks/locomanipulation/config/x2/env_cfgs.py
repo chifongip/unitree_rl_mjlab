@@ -136,13 +136,18 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r"waist_pitch_joint",
   )
 
-  # Upper-body motion playback from cleaned AMASS data.
-  motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "amass" / "amass_all.pkl")
+  # Upper-body motion playback from BONES-SEED.
+  # Standing envs → manipulation gestures (bones_seed/bones_seed_x2_split.pkl).
+  # Walking envs → coordinated locomotion arm swing (bones_seed/bones_seed_locomotion_x2_split.pkl).
+  motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "bones_seed" / "bones_seed_x2_split.pkl")
+  loco_motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "bones_seed" / "bones_seed_locomotion_x2_split.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
+    locomotion_motion_file=loco_motion_file,
     motion_dof_indices=MOTION_DOF_INDICES,
     default_pose_ratio=1.0,
+    command_threshold=0.1,
     waist_yaw_only=True,
     exclude_waist=True,
     pose_only=False,
@@ -364,7 +369,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     cfg.events["hand_force"].params["no_force_ratio"] = 0.0
     cfg.events["hand_force"].params["force_scale"] = 1.0
     cfg.events["hand_force"].params["force_range_max"] = {
-        "x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-40.0, 0.0),
+      "x": (-0.0, 0.0), "y": (-0.0, 0.0), "z": (-40.0, 0.0),
     }
 
     cfg.events["randomize_terrain"] = EventTermCfg(
