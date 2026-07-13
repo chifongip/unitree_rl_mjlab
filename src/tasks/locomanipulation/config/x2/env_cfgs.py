@@ -173,9 +173,9 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   ## Hyperparameters ##
 
   # Command tuning.
-  cfg.commands["base_height"].nominal_height = 0.66
-  cfg.commands["base_height"].max_deviation_down = 0.26
-  cfg.commands["base_height"].max_deviation_up = 0.0
+  cfg.commands["base_height"].nominal_height = 0.64
+  cfg.commands["base_height"].max_deviation_down = 0.24
+  cfg.commands["base_height"].max_deviation_up = 0.02
   cfg.commands["base_height"].nominal_height_ratio = 0.05
   cfg.commands["waist_yaw"].nominal_yaw_ratio = 0.05
 
@@ -194,7 +194,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   cfg.rewards["foot_gait"].params["period"] = 0.6
   cfg.rewards["track_base_height"].params["walking_weight"] = 0.25
   cfg.rewards["body_orientation_l2"].params["standing_weight"] = 2.0
-  cfg.rewards["pose"].params["nominal_height"] = 0.66
+  cfg.rewards["pose"].params["nominal_height"] = 0.64
 
   ## Events ##
 
@@ -278,6 +278,16 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   cfg.rewards["leg_joint_vel_penalty"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
 
   cfg.rewards["body_orientation_l2"].params["asset_cfg"].body_names = ("torso_link",)
+  cfg.rewards["body_orientation_l2"].params["nominal_height"] = 0.64
+  cfg.rewards["body_orientation_l2"].params["height_command_name"] = "base_height"
+  cfg.rewards["body_orientation_l2"].params["height_relax_threshold"] = 0.14
+  cfg.rewards["body_orientation_l2"].params["height_relax_min_scale"] = 0.2
+
+  cfg.rewards["waist_regulation"].params["nominal_height"] = 0.64
+  cfg.rewards["waist_regulation"].params["height_command_name"] = "base_height"
+  cfg.rewards["waist_regulation"].params["height_relax_threshold"] = 0.14
+  cfg.rewards["waist_regulation"].params["height_relax_min_scale"] = 0.2
+
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
@@ -407,7 +417,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     cfg.events["hand_force"].params["constant_force"] = {"x": 0.0, "y": 0.0, "z": 0.0}
 
     cfg.commands["twist"].fixed_command = (0.0, 0.0, 0.0)
-    cfg.commands["base_height"].fixed_height = 0.66
+    cfg.commands["base_height"].fixed_height = 0.64
     cfg.commands["waist_yaw"].fixed_waist_yaw = 0.0
 
     if cfg.scene.terrain is not None:

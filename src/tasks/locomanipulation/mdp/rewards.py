@@ -137,17 +137,31 @@ def waist_regulation(
   standing_threshold: float = 0.1,
   standing_weight: float = 1.0,
   walking_weight: float = 1.0,
+  nominal_height: float | None = None,
+  height_command_name: str | None = None,
+  height_relax_threshold: float = 0.15,
+  height_relax_min_scale: float = 0.2,
 ) -> torch.Tensor:
   """Penalize waist roll/pitch deviation from default pose.
 
   Penalty kernel: 1 - exp(-mean(sq(diff)) / std²). Returns 0 at target,
   1 when far. Optionally applies different weights for standing vs walking,
   gated by the twist command magnitude.
+
+  When nominal_height and height_command_name are provided, the penalty is
+  linearly relaxed as the commanded height drops below nominal, allowing
+  the robot to use waist pitch for CoM compensation at low heights.
   """
   asset: Entity = env.scene[asset_cfg.name]
   diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
   error = torch.mean(torch.square(diff) / std**2, dim=-1)
   penalty = 1.0 - torch.exp(-error)
+
+  if nominal_height is not None and height_command_name is not None:
+    cmd_z = env.command_manager.get_command(height_command_name)[:, 0]
+    height_below = (nominal_height - cmd_z).clamp(min=0.0)
+    scale = 1.0 - (height_below / height_relax_threshold).clamp(max=1.0) * (1.0 - height_relax_min_scale)
+    penalty = penalty * scale
 
   if standing_command_name is not None:
     twist_cmd = env.command_manager.get_command(standing_command_name)
@@ -166,6 +180,10 @@ def body_orientation_l2(
   standing_threshold: float = 0.1,
   standing_weight: float = 1.0,
   walking_weight: float = 1.0,
+  nominal_height: float | None = None,
+  height_command_name: str | None = None,
+  height_relax_threshold: float = 0.15,
+  height_relax_min_scale: float = 0.2,
 ) -> torch.Tensor:
   """Reward flat base orientation (robot being upright).
 
@@ -174,6 +192,10 @@ def body_orientation_l2(
 
   Optionally applies different weights for standing vs walking, gated by
   the twist command magnitude (consistent with track_base_height).
+
+  When nominal_height and height_command_name are provided, the penalty is
+  linearly relaxed as the commanded height drops below nominal, allowing
+  the robot to tilt its torso for CoM compensation at low heights.
   """
   asset: Entity = env.scene[asset_cfg.name]
 
@@ -187,6 +209,12 @@ def body_orientation_l2(
   else:
     # Use root link projected gravity.
     xy_squared = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+  if nominal_height is not None and height_command_name is not None:
+    cmd_z = env.command_manager.get_command(height_command_name)[:, 0]
+    height_below = (nominal_height - cmd_z).clamp(min=0.0)
+    scale = 1.0 - (height_below / height_relax_threshold).clamp(max=1.0) * (1.0 - height_relax_min_scale)
+    xy_squared = xy_squared * scale
 
   if standing_command_name is not None:
     twist_cmd = env.command_manager.get_command(standing_command_name)

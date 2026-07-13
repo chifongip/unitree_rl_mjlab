@@ -274,6 +274,11 @@ def unitree_g1_23dof_locomanipulation_rough_env_cfg(play: bool = False) -> Manag
   cfg.rewards["leg_joint_vel_penalty"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
 
   cfg.rewards["body_orientation_l2"].params["asset_cfg"].body_names = ("torso_link",)
+  cfg.rewards["body_orientation_l2"].params["nominal_height"] = 0.76
+  cfg.rewards["body_orientation_l2"].params["height_command_name"] = "base_height"
+  cfg.rewards["body_orientation_l2"].params["height_relax_threshold"] = 0.16
+  cfg.rewards["body_orientation_l2"].params["height_relax_min_scale"] = 0.2
+
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
