@@ -2,7 +2,8 @@
 
 The source CSV comes from ``record_height_postures.py``.  Before resampling,
 left/right leg pitch joints are averaged and all leg roll/yaw joints are set
-to zero.  Waist roll is also set to zero to preserve sagittal symmetry.  Joint
+to zero.  Waist yaw and roll are also set to zero to preserve sagittal
+symmetry.  Joint
 positions are clamped to the X2 MJCF hard limits before heights are computed
 with the free-base, flat-feet solve in
 ``playback_height_postures.py``.  The exported ``HEIGHT_POSTURES`` table
@@ -105,6 +106,7 @@ def symmetrize_leg_posture(frame: PostureFrame) -> PostureFrame:
         positions[right_name] = mean_position
     for name in ZERO_LEG_JOINTS:
         positions[name] = 0.0
+    positions["waist_yaw_joint"] = 0.0
     positions["waist_roll_joint"] = 0.0
     return PostureFrame(
         height_label=frame.height_label,
