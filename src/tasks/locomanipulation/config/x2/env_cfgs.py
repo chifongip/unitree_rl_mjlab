@@ -278,7 +278,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.15,
     r".*ankle_roll.*": 0.1,
-    r"waist_pitch_joint": 0.2,
+    r"waist_pitch_joint": 0.15,
     r"waist_roll_joint": 0.15,
   }
   cfg.rewards["pose"].params["std_running"] = {
@@ -288,7 +288,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
-    r"waist_pitch_joint": 0.3,
+    r"waist_pitch_joint": 0.25,
     r"waist_roll_joint": 0.25,
   }
 
@@ -308,9 +308,13 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   cfg.rewards["body_orientation_l2"].params["height_relax_threshold"] = 0.04
   cfg.rewards["body_orientation_l2"].params["height_relax_min_scale"] = 0.2
 
-  # Height-dependent waist pitch/roll targets supersede regulation toward the
-  # fixed default waist pose.
-  cfg.rewards.pop("waist_regulation")
+  # Regulate the waist toward its zero default pose only over the upright
+  # posture range.  The penalty fades to zero at 0.60 m so it does not oppose
+  # the recorded nonzero waist-pitch targets used for deeper crouches.
+  cfg.rewards["waist_regulation"].params["nominal_height"] = 0.64
+  cfg.rewards["waist_regulation"].params["height_command_name"] = "base_height"
+  cfg.rewards["waist_regulation"].params["height_relax_threshold"] = 0.04
+  cfg.rewards["waist_regulation"].params["height_relax_min_scale"] = 0.0
 
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names

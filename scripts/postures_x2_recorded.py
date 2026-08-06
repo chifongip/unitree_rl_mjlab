@@ -339,7 +339,7 @@ HEIGHT_POSTURES = {
         "right_ankle_pitch_joint": -0.4639,
         "right_ankle_roll_joint": 0.0000,
         "waist_yaw_joint": 0.0000,
-        "waist_pitch_joint": -0.0018,
+        "waist_pitch_joint": 0.0000,
         "waist_roll_joint": 0.0000,
     },
     0.62: {
@@ -356,7 +356,7 @@ HEIGHT_POSTURES = {
         "right_ankle_pitch_joint": -0.3969,
         "right_ankle_roll_joint": 0.0000,
         "waist_yaw_joint": 0.0000,
-        "waist_pitch_joint": -0.0250,
+        "waist_pitch_joint": 0.0000,
         "waist_roll_joint": 0.0000,
     },
     0.64: {
@@ -373,7 +373,7 @@ HEIGHT_POSTURES = {
         "right_ankle_pitch_joint": -0.2941,
         "right_ankle_roll_joint": 0.0000,
         "waist_yaw_joint": 0.0000,
-        "waist_pitch_joint": -0.0298,
+        "waist_pitch_joint": 0.0000,
         "waist_roll_joint": 0.0000,
     },
 }
