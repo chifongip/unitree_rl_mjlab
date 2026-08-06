@@ -59,6 +59,23 @@ LOWER_BODY_JOINT_PATTERNS = (
 
 LOWER_BODY_JOINT_CFG = SceneEntityCfg("robot", joint_names=LOWER_BODY_JOINT_PATTERNS)
 
+# Height-posture rewards also track the recorded waist pitch and roll.  Waist
+# yaw remains excluded because it has an independent command and tracking
+# reward, which may intentionally request nonzero yaw at any base height.
+HEIGHT_POSTURE_JOINT_NAMES = (
+    *LOWER_BODY_JOINT_NAMES[:12],
+    "waist_pitch_joint",
+    "waist_roll_joint",
+)
+HEIGHT_POSTURE_JOINT_PATTERNS = (
+    *LOWER_BODY_JOINT_PATTERNS,
+    r"waist_pitch_joint",
+    r"waist_roll_joint",
+)
+HEIGHT_POSTURE_JOINT_CFG = SceneEntityCfg(
+  "robot", joint_names=HEIGHT_POSTURE_JOINT_PATTERNS
+)
+
 
 def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Agibot X2 rough terrain locomanipulation configuration."""
@@ -174,8 +191,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
 
   # Command tuning.
   cfg.commands["base_height"].nominal_height = 0.64
-  cfg.commands["base_height"].max_deviation_down = 0.24
-  cfg.commands["base_height"].max_deviation_up = 0.02
+  cfg.commands["base_height"].max_deviation_down = 0.34
+  cfg.commands["base_height"].max_deviation_up = 0.0
   cfg.commands["base_height"].nominal_height_ratio = 0.05
   cfg.commands["waist_yaw"].nominal_yaw_ratio = 0.05
 
@@ -243,7 +260,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
 
   ## Rewards ##
 
-  cfg.rewards["pose"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+  cfg.rewards["pose"].params["asset_cfg"] = HEIGHT_POSTURE_JOINT_CFG
   cfg.rewards["pose"].params["std_standing"] = {
     r".*hip_pitch.*": 0.05,
     r".*hip_roll.*": 0.05,
@@ -251,6 +268,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r".*knee.*": 0.05,
     r".*ankle_pitch.*": 0.05,
     r".*ankle_roll.*": 0.05,
+    r"waist_pitch_joint": 0.05,
+    r"waist_roll_joint": 0.05,
   }
   cfg.rewards["pose"].params["std_walking"] = {
     r".*hip_pitch.*": 0.5,
@@ -259,6 +278,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.15,
     r".*ankle_roll.*": 0.1,
+    r"waist_pitch_joint": 0.2,
+    r"waist_roll_joint": 0.15,
   }
   cfg.rewards["pose"].params["std_running"] = {
     r".*hip_pitch.*": 0.5,
@@ -267,11 +288,13 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
+    r"waist_pitch_joint": 0.3,
+    r"waist_roll_joint": 0.25,
   }
 
-  # Restrict stand_still, joint_acc_l2, joint_pos_limits and leg_joint_vel_penalty to
-  # lower-body joints.
-  cfg.rewards["stand_still"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
+  # The posture rewards include waist pitch/roll.  Motion penalties remain
+  # restricted to the original 12 leg joints.
+  cfg.rewards["stand_still"].params["asset_cfg"] = HEIGHT_POSTURE_JOINT_CFG
   cfg.rewards["stand_still"].params["base_height_command_name"] = "base_height"
   cfg.rewards["joint_acc_l2"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
   cfg.rewards["joint_pos_limits"].params["asset_cfg"] = LOWER_BODY_JOINT_CFG
@@ -280,13 +303,14 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   cfg.rewards["body_orientation_l2"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["body_orientation_l2"].params["nominal_height"] = 0.64
   cfg.rewards["body_orientation_l2"].params["height_command_name"] = "base_height"
-  cfg.rewards["body_orientation_l2"].params["height_relax_threshold"] = 0.14
+  # Reach minimum torso-upright penalty scaling at 0.60 m so the recorded
+  # height-dependent waist pitch is not opposed throughout the crouch range.
+  cfg.rewards["body_orientation_l2"].params["height_relax_threshold"] = 0.04
   cfg.rewards["body_orientation_l2"].params["height_relax_min_scale"] = 0.2
 
-  cfg.rewards["waist_regulation"].params["nominal_height"] = 0.64
-  cfg.rewards["waist_regulation"].params["height_command_name"] = "base_height"
-  cfg.rewards["waist_regulation"].params["height_relax_threshold"] = 0.14
-  cfg.rewards["waist_regulation"].params["height_relax_min_scale"] = 0.2
+  # Height-dependent waist pitch/roll targets supersede regulation toward the
+  # fixed default waist pose.
+  cfg.rewards.pop("waist_regulation")
 
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
@@ -302,10 +326,20 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   ## Height Postures ##
 
   import importlib.util as _ilu
-  _postures_path = str(Path(__file__).resolve().parents[5] / "scripts" / "postures_x2.py")
-  _spec = _ilu.spec_from_file_location("postures_x2", _postures_path)
+  _postures_path = str(
+    Path(__file__).resolve().parents[5] / "scripts" / "postures_x2_recorded.py"
+  )
+  _spec = _ilu.spec_from_file_location("postures_x2_recorded", _postures_path)
   _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
-  height_postures = _mod.HEIGHT_POSTURES
+  # The resampling pipeline already clamps the exported values to the MJCF
+  # joint limits.  Only select the joints used by height-posture rewards here.
+  height_postures = {
+    height: {
+      name: posture[name]
+      for name in HEIGHT_POSTURE_JOINT_NAMES
+    }
+    for height, posture in _mod.HEIGHT_POSTURES.items()
+  }
   cfg.rewards["pose"].params["height_postures"] = height_postures
   cfg.rewards["stand_still"].params["height_postures"] = height_postures
 
