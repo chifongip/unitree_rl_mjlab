@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import TYPE_CHECKING
 
@@ -53,6 +54,39 @@ def _sample_enabled_axis_scales(
   ).sample(sample_shape)
   scales[..., enabled_axes] = enabled_scales
   return scales
+
+
+def _intersect_force_bounds(
+  force_mins: list[torch.Tensor],
+  force_maxes: list[torch.Tensor],
+  hard_bounds: dict[str, tuple[float, float]] | None,
+  scale: float,
+) -> None:
+  """Intersect estimator intervals with finite task caps, then scale them."""
+  for ee_idx in range(len(force_mins)):
+    for axis, key in enumerate(_AXES):
+      f_min = force_mins[ee_idx][:, axis]
+      f_max = force_maxes[ee_idx][:, axis]
+      if hard_bounds is None:
+        if not torch.isfinite(f_min).all() or not torch.isfinite(f_max).all():
+          raise ValueError(
+            "max_force_estimation requires finite force_range_max bounds for "
+            f"unconstrained axis '{key}'."
+          )
+        hard_lo, hard_hi = -float("inf"), float("inf")
+      else:
+        hard_lo, hard_hi = hard_bounds.get(key, (0.0, 0.0))
+        if hard_hi < hard_lo:
+          raise ValueError(f"Invalid force_range_max['{key}']: {(hard_lo, hard_hi)}")
+      bounded_min = torch.maximum(f_min, torch.full_like(f_min, hard_lo))
+      bounded_max = torch.minimum(f_max, torch.full_like(f_max, hard_hi))
+      feasible = bounded_min <= bounded_max
+      force_mins[ee_idx][:, axis] = torch.where(
+        feasible, bounded_min * scale, torch.zeros_like(bounded_min)
+      )
+      force_maxes[ee_idx][:, axis] = torch.where(
+        feasible, bounded_max * scale, torch.zeros_like(bounded_max)
+      )
 
 
 def _resolve_triangle_period_s(params: dict) -> tuple[float, float]:
@@ -143,11 +177,11 @@ def _resolve_constant_forces(
 
 
 class MaxForceEstimator:
-  """Estimate maximum allowable end-effector forces via Jacobian transpose.
+  """Estimate torque-feasible end-effector force intervals.
 
-  For each end-effector, computes the max Cartesian force (per axis) that
-  keeps all arm/waist joint torques within their effort limits:
-    F_max[axis] = min_i( effort_limit[i] / |J[axis, i]| )
+  Each end effector is constrained by its own arm joints. Bounds reserve the
+  actuator effort already used by the current controller and evaluate the
+  Jacobian at the actual force-application point.
   """
 
   def __init__(
@@ -155,37 +189,106 @@ class MaxForceEstimator:
     env: ManagerBasedRlEnv,
     asset: Entity,
     ee_body_names: tuple[str, ...],
-    constraint_joint_names: tuple[str, ...],
+    constraint_joint_names_by_body: dict[str, tuple[str, ...]] | None = None,
+    constraint_joint_names: tuple[str, ...] | None = None,
+    effort_limit_scale: float = 0.9,
+    jacobian_zero_tolerance: float = 1e-6,
   ):
     self._num_envs = env.num_envs
     self._device = env.device
     self._asset = asset
+    if not 0.0 < effort_limit_scale <= 1.0:
+      raise ValueError(
+        f"effort_limit_scale must be in (0, 1], got {effort_limit_scale}"
+      )
+    if jacobian_zero_tolerance <= 0.0:
+      raise ValueError(
+        "jacobian_zero_tolerance must be positive, got "
+        f"{jacobian_zero_tolerance}"
+      )
+    self._effort_limit_scale = effort_limit_scale
+    self._jacobian_zero_tolerance = jacobian_zero_tolerance
+
+    if constraint_joint_names_by_body is None:
+      if constraint_joint_names is None:
+        raise ValueError(
+          "MaxForceEstimator requires constraint_joint_names_by_body."
+        )
+      if len(ee_body_names) != 1:
+        raise ValueError(
+          "Legacy constraint_joint_names is only supported for one end effector; "
+          "use constraint_joint_names_by_body for multiple end effectors."
+        )
+      constraint_joint_names_by_body = {
+        ee_body_names[0]: constraint_joint_names
+      }
+    if set(constraint_joint_names_by_body) != set(ee_body_names):
+      raise ValueError(
+        "constraint_joint_names_by_body keys must exactly match ee_body_names; "
+        f"got keys={tuple(constraint_joint_names_by_body)}, bodies={ee_body_names}"
+      )
 
     # Resolve EE body IDs: entity-local for data access, global for mjwarp.jac.
     self._ee_local_body_ids: list[int] = []
     self._ee_global_body_ids: list[int] = []
     for name in ee_body_names:
       ids, _ = asset.find_bodies(name)
+      if len(ids) != 1:
+        raise ValueError(
+          f"End-effector body '{name}' must resolve exactly once, got {len(ids)}."
+        )
       local_id = ids[0]
       self._ee_local_body_ids.append(local_id)
       self._ee_global_body_ids.append(int(asset.indexing.body_ids[local_id].item()))
 
-    # Resolve constraint joint entity-local indices and model DOF addresses.
-    joint_ids, _ = asset.find_joints(constraint_joint_names)
-    joint_ids_t = torch.tensor(joint_ids, device=self._device, dtype=torch.long)
-    self._constraint_dof_adr = asset.indexing.joint_v_adr[joint_ids_t]
-
-    # Build per-DOF effort limit tensor for constraint DOFs.
-    num_dofs = len(self._constraint_dof_adr)
-    effort = torch.zeros(num_dofs, device=self._device)
+    # Resolve actuator effort limits by model DOF address and reject ambiguous
+    # or missing mappings rather than silently producing zero force bounds.
+    efforts_by_dof: dict[int, list[float]] = {}
     for act in asset.actuators:
       act_dof_adr = asset.indexing.joint_v_adr[act.target_ids]
       fl = act.cfg.effort_limit
       for adr in act_dof_adr:
-        mask = self._constraint_dof_adr == adr
-        if mask.any():
-          effort[mask] = fl
-    self._effort_limit = effort  # (num_constraint_dofs,)
+        dof_adr = int(adr.item())
+        efforts_by_dof.setdefault(dof_adr, []).append(fl)
+
+    self._ee_constraint_joint_ids: list[torch.Tensor] = []
+    self._ee_constraint_dof_adr: list[torch.Tensor] = []
+    self._ee_effort_limit: list[torch.Tensor] = []
+    for body_name in ee_body_names:
+      requested_joint_names = constraint_joint_names_by_body[body_name]
+      joint_ids, joint_names = asset.find_joints(requested_joint_names)
+      if len(joint_ids) != len(requested_joint_names):
+        raise ValueError(
+          f"Expected {len(requested_joint_names)} constraint joints for body "
+          f"'{body_name}', resolved {len(joint_ids)}: {joint_names}"
+        )
+      if len(set(joint_ids)) != len(joint_ids):
+        raise ValueError(
+          f"Duplicate constraint joints resolved for body '{body_name}': {joint_names}"
+        )
+      joint_ids_t = torch.tensor(
+        joint_ids, device=self._device, dtype=torch.long
+      )
+      dof_adr = asset.indexing.joint_v_adr[joint_ids_t]
+      effort_values: list[float] = []
+      for joint_name, adr in zip(joint_names, dof_adr, strict=True):
+        dof_efforts = efforts_by_dof.get(int(adr.item()), [])
+        if len(dof_efforts) != 1:
+          raise ValueError(
+            f"Constraint joint '{joint_name}' for body '{body_name}' must map "
+            f"to exactly one actuator effort limit, got {len(dof_efforts)}."
+          )
+        effort = dof_efforts[0]
+        if effort is None or not math.isfinite(effort) or effort <= 0.0:
+          raise ValueError(
+            f"Invalid effort limit {effort} for constraint joint '{joint_name}'."
+          )
+        effort_values.append(float(effort) * self._effort_limit_scale)
+      self._ee_constraint_joint_ids.append(joint_ids_t)
+      self._ee_constraint_dof_adr.append(dof_adr)
+      self._ee_effort_limit.append(
+        torch.tensor(effort_values, device=self._device)
+      )
 
     # Allocate warp tensors for mjwarp.jac.
     nworld = self._num_envs
@@ -196,20 +299,39 @@ class MaxForceEstimator:
       self._body_wp = wp.zeros(nworld, dtype=wp.int32)
 
   def estimate(
-    self, env: ManagerBasedRlEnv
+    self,
+    env: ManagerBasedRlEnv,
+    application_offsets_b: torch.Tensor | None = None,
   ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Compute per-EE force bounds from current configuration.
+    """Compute per-EE world-frame force intervals.
 
     Returns:
       (force_mins, force_maxes) — lists of (nworld, 3) tensors, one per EE.
     """
+    num_ee = len(self._ee_local_body_ids)
+    if application_offsets_b is None:
+      application_offsets_b = torch.zeros(
+        self._num_envs, num_ee, 3, device=self._device
+      )
+    expected_shape = (self._num_envs, num_ee, 3)
+    if tuple(application_offsets_b.shape) != expected_shape:
+      raise ValueError(
+        "application_offsets_b must have shape "
+        f"{expected_shape}, got {tuple(application_offsets_b.shape)}"
+      )
+
     force_mins: list[torch.Tensor] = []
     force_maxes: list[torch.Tensor] = []
 
-    for local_id, global_id in zip(self._ee_local_body_ids, self._ee_global_body_ids):
-      # Set point to body CoM position (entity-local index).
+    for ee_idx, (local_id, global_id) in enumerate(
+      zip(self._ee_local_body_ids, self._ee_global_body_ids, strict=True)
+    ):
+      # Evaluate the Jacobian at the same body-frame offset used to apply force.
       com_pos = self._asset.data.body_com_pos_w[:, local_id]  # (nworld, 3)
-      self._point_wp.assign(wp.from_torch(com_pos, dtype=wp.vec3))
+      com_quat = self._asset.data.body_com_quat_w[:, local_id]
+      offset_w = quat_apply(com_quat, application_offsets_b[:, ee_idx])
+      application_point_w = com_pos + offset_w
+      self._point_wp.assign(wp.from_torch(application_point_w, dtype=wp.vec3))
       self._body_wp.fill_(global_id)
 
       # Compute translational Jacobian.
@@ -219,18 +341,36 @@ class MaxForceEstimator:
           self._jacp_wp, None, self._point_wp, self._body_wp,
         )
 
-      # Slice constraint DOF columns: (nworld, 3, n_constraint_dofs).
-      jacp = wp.to_torch(self._jacp_wp)[:, :, self._constraint_dof_adr]
+      dof_adr = self._ee_constraint_dof_adr[ee_idx]
+      joint_ids = self._ee_constraint_joint_ids[ee_idx]
+      effort_limit = self._ee_effort_limit[ee_idx]
+      jacp = wp.to_torch(self._jacp_wp)[:, :, dof_adr]
+      baseline_effort = self._asset.data.qfrc_actuator[:, joint_ids]
 
-      # Per-joint, per-axis force limits: effort / (|J| + eps).
-      eps = 1e-2
-      inv_jac = 1.0 / (jacp.abs() + eps)
-      f_max_all = inv_jac * self._effort_limit
-      f_min_all = -inv_jac * self._effort_limit
+      # Solve the signed scalar-force interval for every axis and joint:
+      #   -limit <= baseline + J_axis * force_axis <= limit.
+      coeff_active = jacp.abs() >= self._jacobian_zero_tolerance
+      lower_num = -effort_limit - baseline_effort
+      upper_num = effort_limit - baseline_effort
+      safe_coeff = torch.where(coeff_active, jacp, torch.ones_like(jacp))
+      bound_a = lower_num.unsqueeze(1) / safe_coeff
+      bound_b = upper_num.unsqueeze(1) / safe_coeff
+      neg_inf = torch.full_like(jacp, -float("inf"))
+      pos_inf = torch.full_like(jacp, float("inf"))
+      joint_min = torch.where(
+        coeff_active, torch.minimum(bound_a, bound_b), neg_inf
+      )
+      joint_max = torch.where(
+        coeff_active, torch.maximum(bound_a, bound_b), pos_inf
+      )
+      f_min = joint_min.max(dim=2).values
+      f_max = joint_max.min(dim=2).values
 
-      # Most restrictive across joints.
-      f_max = f_max_all.min(dim=2).values
-      f_min = f_min_all.max(dim=2).values
+      baseline_feasible = (baseline_effort.abs() <= effort_limit).all(dim=1)
+      interval_feasible = (f_min <= f_max).all(dim=1)
+      valid = baseline_feasible & interval_feasible
+      f_min = torch.where(valid.unsqueeze(1), f_min, torch.zeros_like(f_min))
+      f_max = torch.where(valid.unsqueeze(1), f_max, torch.zeros_like(f_max))
 
       force_mins.append(f_min)
       force_maxes.append(f_max)
@@ -279,7 +419,14 @@ class HandForceEvent:
         env=env,
         asset=self._asset,
         ee_body_names=ee_body_names,
-        constraint_joint_names=cfg.params["constraint_joint_names"],
+        constraint_joint_names_by_body=cfg.params.get(
+          "constraint_joint_names_by_body"
+        ),
+        constraint_joint_names=cfg.params.get("constraint_joint_names"),
+        effort_limit_scale=cfg.params.get("effort_limit_scale", 0.9),
+        jacobian_zero_tolerance=cfg.params.get(
+          "jacobian_zero_tolerance", 1e-6
+        ),
       )
 
     # Per-env Dirichlet scaling for axis-wise force diversity.
@@ -292,6 +439,14 @@ class HandForceEvent:
     self._active = torch.zeros(
       self._num_envs, device=self._device, dtype=torch.bool
     )
+
+    # Keep the force application point fixed for each impulse. The next point
+    # is sampled at reset or when the previous impulse expires.
+    self._body_point_offset_range = cfg.params.get("body_point_offset_range")
+    self._body_point_offset_b = torch.zeros(
+      self._num_envs, self._num_bodies, 3, device=self._device
+    )
+    self._sample_body_point_offsets(slice(None))
 
     # No-force mask (per-episode, resampled at reset).
     self._no_force_ratio = cfg.params.get("no_force_ratio", 0.0)
@@ -334,36 +489,6 @@ class HandForceEvent:
       return
 
     dt = self._step_dt
-    effective_scale = min(max(force_scale, 0.0), 1.0)
-
-    # Determine force bounds: Jacobian-based or static.
-    if max_force_estimation and self._estimator is not None:
-      # Dynamic bounds from Jacobian, scaled by curriculum.
-      ee_force_mins, ee_force_maxes = self._estimator.estimate(env)
-      # Clip to hard bounds and apply force_scale.
-      keys = ("x", "y", "z")
-      for ee_idx in range(len(ee_force_mins)):
-        for axis, key in enumerate(keys):
-          if force_range_max is not None:
-            hard_lo, hard_hi = force_range_max[key]
-          else:
-            hard_lo, hard_hi = -float("inf"), float("inf")
-          ee_force_mins[ee_idx][:, axis] = ee_force_mins[ee_idx][:, axis].clamp(
-            hard_lo, hard_hi
-          ) * effective_scale
-          ee_force_maxes[ee_idx][:, axis] = ee_force_maxes[ee_idx][:, axis].clamp(
-            hard_lo, hard_hi
-          ) * effective_scale
-      use_per_ee_bounds = True
-    else:
-      # Static bounds from config.
-      if force_range_max is not None:
-        force_range = {
-          key: (lo * effective_scale, hi * effective_scale)
-          for key, (lo, hi) in force_range_max.items()
-        }
-      assert force_range is not None, "Must provide force_range or force_range_max"
-      use_per_ee_bounds = False
 
     self._time_remaining[self._active] -= dt
 
@@ -379,6 +504,7 @@ class HandForceEvent:
       )
       self._active[expired_ids] = False
       self._time_remaining[expired_ids] = 0.0
+      self._sample_body_point_offsets(expired_ids)
       int_low, int_high = cooldown_s
       self._interval_time_left[expired_ids] = (
         torch.rand(len(expired_ids), device=self._device) * (int_high - int_low)
@@ -394,6 +520,25 @@ class HandForceEvent:
 
     trigger_ids = eligible.nonzero(as_tuple=False).squeeze(-1)
     n = len(trigger_ids)
+
+    # Bounds are only needed when an impulse will actually be triggered.
+    effective_scale = min(max(force_scale, 0.0), 1.0)
+    if max_force_estimation and self._estimator is not None:
+      ee_force_mins, ee_force_maxes = self._estimator.estimate(
+        env, application_offsets_b=self._body_point_offset_b
+      )
+      _intersect_force_bounds(
+        ee_force_mins, ee_force_maxes, force_range_max, effective_scale
+      )
+      use_per_ee_bounds = True
+    else:
+      if force_range_max is not None:
+        force_range = {
+          key: (lo * effective_scale, hi * effective_scale)
+          for key, (lo, hi) in force_range_max.items()
+        }
+      assert force_range is not None, "Must provide force_range or force_range_max"
+      use_per_ee_bounds = False
 
     size = (n, self._num_bodies, 3)
 
@@ -428,17 +573,12 @@ class HandForceEvent:
     if tor_lo != 0.0 or tor_hi != 0.0:
       torques = torch.empty(size, device=self._device).uniform_(tor_lo, tor_hi)
 
-    # Randomize body_point_offset per-episode and compute torque.
-    if body_point_offset_range is not None:
-      offset = torch.zeros(n, 3, device=self._device)
-      for axis, key in enumerate(("x", "y", "z")):
-        lo, hi = body_point_offset_range.get(key, (0.0, 0.0))
-        offset[:, axis] = torch.empty(n, device=self._device).uniform_(lo, hi)
-
+    # Apply force at the same point used for the admissibility Jacobian.
+    if self._body_point_offset_range is not None:
       body_quat = self._asset.data.body_com_quat_w[trigger_ids][:, self._body_ids]
       offset_w = quat_apply(
         body_quat.reshape(-1, 4),
-        offset.unsqueeze(1).expand(n, self._num_bodies, 3).reshape(-1, 3),
+        self._body_point_offset_b[trigger_ids].reshape(-1, 3),
       ).reshape(n, self._num_bodies, 3)
       torques = torques + torch.cross(offset_w, forces, dim=-1)
 
@@ -458,6 +598,20 @@ class HandForceEvent:
     self._interval_time_left[trigger_ids] = (
       torch.rand(n, device=self._device) * (int_high - int_low) + int_low
     )
+
+  def _sample_body_point_offsets(
+    self, env_ids: torch.Tensor | slice
+  ) -> None:
+    """Sample body-frame application offsets for the next impulse."""
+    if self._body_point_offset_range is None:
+      self._body_point_offset_b[env_ids] = 0.0
+      return
+    n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
+    for axis, key in enumerate(_AXES):
+      lo, hi = self._body_point_offset_range.get(key, (0.0, 0.0))
+      self._body_point_offset_b[env_ids, :, axis] = torch.empty(
+        n, self._num_bodies, device=self._device
+      ).uniform_(lo, hi)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     if env_ids is None:
@@ -479,6 +633,7 @@ class HandForceEvent:
     self._time_remaining[env_ids] = 0.0
     self._interval_time_left[env_ids] = 0.0
     self._active[env_ids] = False
+    self._sample_body_point_offsets(env_ids)
 
     # Resample per-env no-force mask.
     n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
@@ -560,7 +715,14 @@ class TriangleWaveForceEvent:
         env=env,
         asset=self._asset,
         ee_body_names=ee_body_names,
-        constraint_joint_names=cfg.params["constraint_joint_names"],
+        constraint_joint_names_by_body=cfg.params.get(
+          "constraint_joint_names_by_body"
+        ),
+        constraint_joint_names=cfg.params.get("constraint_joint_names"),
+        effort_limit_scale=cfg.params.get("effort_limit_scale", 0.9),
+        jacobian_zero_tolerance=cfg.params.get(
+          "jacobian_zero_tolerance", 1e-6
+        ),
       )
 
     # Per-body Dirichlet scaling across enabled axes only. A single enabled
@@ -591,7 +753,7 @@ class TriangleWaveForceEvent:
     # Application point is fixed for an episode rather than resampled each step.
     self._body_point_offset_range = cfg.params.get("body_point_offset_range")
     self._body_point_offset_b = torch.zeros(
-      self._num_envs, 1, 3, device=self._device
+      self._num_envs, self._num_bodies, 3, device=self._device
     )
     self._sample_body_point_offsets(slice(None))
 
@@ -653,20 +815,12 @@ class TriangleWaveForceEvent:
 
     # --- Compute force bounds (same logic as HandForceEvent) ---
     if max_force_estimation and self._estimator is not None:
-      ee_force_mins, ee_force_maxes = self._estimator.estimate(env)
-      keys = ("x", "y", "z")
-      for ee_idx in range(len(ee_force_mins)):
-        for axis, key in enumerate(keys):
-          if force_range_max is not None:
-            hard_lo, hard_hi = force_range_max[key]
-          else:
-            hard_lo, hard_hi = -float("inf"), float("inf")
-          ee_force_mins[ee_idx][:, axis] = (
-            ee_force_mins[ee_idx][:, axis].clamp(hard_lo, hard_hi) * effective_scale
-          )
-          ee_force_maxes[ee_idx][:, axis] = (
-            ee_force_maxes[ee_idx][:, axis].clamp(hard_lo, hard_hi) * effective_scale
-          )
+      ee_force_mins, ee_force_maxes = self._estimator.estimate(
+        env, application_offsets_b=self._body_point_offset_b
+      )
+      _intersect_force_bounds(
+        ee_force_mins, ee_force_maxes, force_range_max, effective_scale
+      )
       for ee_idx in range(len(ee_force_mins)):
         ee_force_mins[ee_idx] *= self._force_xyz_scale[:, ee_idx, :]
         ee_force_maxes[ee_idx] *= self._force_xyz_scale[:, ee_idx, :]
@@ -727,7 +881,29 @@ class TriangleWaveForceEvent:
           force_xy[walking_projected] * resist_unit[walking_projected],
           dim=-1, keepdim=True,
         )
-        force_xy[walking_projected] = torch.abs(proj) * resist_unit[walking_projected]
+        projected_magnitude = torch.abs(proj)
+        if use_per_ee_bounds:
+          # Projection changes the axis mixture. Cap the distance along the
+          # resistance ray so it remains in the scaled feasible box.
+          direction = resist_unit[walking_projected]
+          bounds_min = ee_force_mins[ee_idx][walking_projected, :2]
+          bounds_max = ee_force_maxes[ee_idx][walking_projected, :2]
+          positive = direction > 1e-6
+          negative = direction < -1e-6
+          component_max = torch.where(
+            positive,
+            bounds_max / direction.clamp_min(1e-6),
+            torch.where(
+              negative,
+              bounds_min / direction.clamp_max(-1e-6),
+              torch.full_like(direction, float("inf")),
+            ),
+          )
+          ray_max = component_max.min(dim=1, keepdim=True).values.clamp_min(0.0)
+          projected_magnitude = torch.minimum(projected_magnitude, ray_max)
+        force_xy[walking_projected] = (
+          projected_magnitude * resist_unit[walking_projected]
+        )
         forces[:, ee_idx, :2] = force_xy
 
     # --- Zero out no-force envs ---
@@ -744,7 +920,7 @@ class TriangleWaveForceEvent:
       body_quat = self._asset.data.body_com_quat_w[:, self._body_ids]
       offset_w = quat_apply(
         body_quat.reshape(-1, 4),
-        self._body_point_offset_b.expand(n, self._num_bodies, 3).reshape(-1, 3),
+        self._body_point_offset_b.reshape(-1, 3),
       ).reshape(n, self._num_bodies, 3)
       torques = torques + torch.cross(offset_w, forces, dim=-1)
 
@@ -763,7 +939,7 @@ class TriangleWaveForceEvent:
     for axis, key in enumerate(_AXES):
       lo, hi = self._body_point_offset_range.get(key, (0.0, 0.0))
       self._body_point_offset_b[env_ids, :, axis] = torch.empty(
-        n, 1, device=self._device
+        n, self._num_bodies, device=self._device
       ).uniform_(lo, hi)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:

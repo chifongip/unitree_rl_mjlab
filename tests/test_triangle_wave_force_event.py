@@ -98,9 +98,9 @@ def test_reset_only_resamples_selected_environment_state():
     "z": (0.03, 0.03),
   }
   event._body_point_offset_b = torch.tensor([
-    [[0.11, 0.12, 0.13]],
-    [[0.21, 0.22, 0.23]],
-    [[0.31, 0.32, 0.33]],
+    [[0.11, 0.12, 0.13], [0.14, 0.15, 0.16]],
+    [[0.21, 0.22, 0.23], [0.24, 0.25, 0.26]],
+    [[0.31, 0.32, 0.33], [0.34, 0.35, 0.36]],
   ])
   event._no_force_ratio = 0.0
   event._no_force_mask = torch.zeros(3, dtype=torch.bool)
@@ -114,7 +114,8 @@ def test_reset_only_resamples_selected_environment_state():
   assert torch.equal(event._force_phase_ts[[0, 2]], phase_before[[0, 2]])
   assert torch.equal(event._body_point_offset_b[[0, 2]], offsets_before[[0, 2]])
   assert torch.allclose(
-    event._body_point_offset_b[1], torch.tensor([[0.01, 0.02, 0.03]])
+    event._body_point_offset_b[1],
+    torch.tensor([[0.01, 0.02, 0.03], [0.01, 0.02, 0.03]]),
   )
   assert torch.all(event._force_xyz_scale[1, :, :2] == 0.0)
   assert torch.all(event._force_xyz_scale[1, :, 2] == 1.0)
