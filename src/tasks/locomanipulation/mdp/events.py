@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import mujoco_warp as mjwarp
@@ -17,6 +18,75 @@ if TYPE_CHECKING:
   from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 _AXES = ("x", "y", "z")
+
+
+def _enabled_force_axes(
+  force_bounds: dict[str, tuple[float, float]] | None,
+  device: torch.device,
+) -> torch.Tensor:
+  """Return a boolean XYZ mask for axes with nonzero configured bounds."""
+  return torch.tensor(
+    [
+      force_bounds is not None and any(v != 0.0 for v in force_bounds.get(axis, (0.0, 0.0)))
+      for axis in _AXES
+    ],
+    device=device,
+    dtype=torch.bool,
+  )
+
+
+def _sample_enabled_axis_scales(
+  enabled_axes: torch.Tensor,
+  sample_shape: tuple[int, ...],
+  device: torch.device,
+) -> torch.Tensor:
+  """Sample Dirichlet scales over enabled axes, leaving disabled axes at zero."""
+  scales = torch.zeros(*sample_shape, 3, device=device)
+  num_enabled = int(enabled_axes.sum().item())
+  if num_enabled == 0:
+    return scales
+  if num_enabled == 1:
+    scales[..., enabled_axes] = 1.0
+    return scales
+  enabled_scales = torch.distributions.Dirichlet(
+    torch.ones(num_enabled, device=device)
+  ).sample(sample_shape)
+  scales[..., enabled_axes] = enabled_scales
+  return scales
+
+
+def _resolve_triangle_period_s(params: dict) -> tuple[float, float]:
+  """Resolve the full triangle-wave period, supporting the legacy half-period name."""
+  if "period_s" in params:
+    period_s = params["period_s"]
+  elif "duration_s" in params:
+    warnings.warn(
+      "TriangleWaveForceEvent 'duration_s' is deprecated; use 'period_s' with "
+      "twice the values. 'duration_s' is interpreted as a half-period.",
+      DeprecationWarning,
+      stacklevel=3,
+    )
+    duration_s = params["duration_s"]
+    period_s = (2.0 * duration_s[0], 2.0 * duration_s[1])
+  else:
+    raise ValueError("TriangleWaveForceEvent requires 'period_s'.")
+
+  period_lo, period_hi = period_s
+  if period_lo <= 0.0 or period_hi < period_lo:
+    raise ValueError(f"Invalid triangle-wave period range: {period_s}")
+  return float(period_lo), float(period_hi)
+
+
+def _advance_triangle_phase(
+  phase_ts: torch.Tensor,
+  period_steps: torch.Tensor,
+  active: torch.Tensor,
+) -> torch.Tensor:
+  """Advance a triangle wave whose phase domain [0, 2) is one full period."""
+  phase_ts[active] = torch.remainder(
+    phase_ts[active] + 2.0 / period_steps[active], 2.0
+  )
+  return torch.abs(phase_ts - 1.0)
 
 
 def _resolve_constant_forces(
@@ -493,10 +563,15 @@ class TriangleWaveForceEvent:
         constraint_joint_names=cfg.params["constraint_joint_names"],
       )
 
-    # Per-body Dirichlet scaling for axis-wise force diversity.
-    self._force_xyz_scale = torch.distributions.Dirichlet(
-      torch.tensor([1.0, 1.0, 1.0], device=self._device)
-    ).sample((self._num_envs, self._num_bodies))
+    # Per-body Dirichlet scaling across enabled axes only. A single enabled
+    # axis receives scale 1.0 instead of being diluted by disabled axes.
+    force_bounds = cfg.params.get("force_range_max", cfg.params.get("force_range"))
+    self._enabled_force_axes = _enabled_force_axes(force_bounds, self._device)
+    self._force_xyz_scale = _sample_enabled_axis_scales(
+      self._enabled_force_axes,
+      (self._num_envs, self._num_bodies),
+      self._device,
+    )
 
     # Triangle wave state (per-body independent phase).
     self._force_phase_ts = torch.rand(
@@ -505,13 +580,20 @@ class TriangleWaveForceEvent:
     self._force_phase = torch.abs(
       torch.remainder(self._force_phase_ts, 2.0) - 1.0
     )
-    dur_lo, dur_hi = cfg.params["duration_s"]
-    self._dur_lo_steps = int(dur_lo / self._step_dt)
-    self._dur_hi_steps = int(dur_hi / self._step_dt)
-    self._force_duration = torch.randint(
-      self._dur_lo_steps, self._dur_hi_steps + 1,
+    period_lo, period_hi = _resolve_triangle_period_s(cfg.params)
+    self._period_lo_steps = max(1, int(period_lo / self._step_dt))
+    self._period_hi_steps = max(self._period_lo_steps, int(period_hi / self._step_dt))
+    self._force_period = torch.randint(
+      self._period_lo_steps, self._period_hi_steps + 1,
       (self._num_envs, self._num_bodies, 1), device=self._device,
     ).float()
+
+    # Application point is fixed for an episode rather than resampled each step.
+    self._body_point_offset_range = cfg.params.get("body_point_offset_range")
+    self._body_point_offset_b = torch.zeros(
+      self._num_envs, 1, 3, device=self._device
+    )
+    self._sample_body_point_offsets(slice(None))
 
     # Standing/walking gate.
     self._command_name = cfg.params.get("command_name", "twist")
@@ -534,8 +616,9 @@ class TriangleWaveForceEvent:
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     torque_range: tuple[float, float],
-    duration_s: tuple[float, float],
     asset_cfg: SceneEntityCfg,
+    period_s: tuple[float, float] | None = None,
+    duration_s: tuple[float, float] | None = None,
     force_range_max: dict[str, tuple[float, float]] | None = None,
     force_scale: float = 0.0,
     force_range: dict[str, tuple[float, float]] | None = None,
@@ -548,7 +631,10 @@ class TriangleWaveForceEvent:
     cooldown_s: tuple[float, float] = (0.0, 0.0),
     **kwargs: object,
   ) -> None:
-    del env_ids, asset_cfg, cooldown_s
+    del (
+      env_ids, asset_cfg, cooldown_s, period_s, duration_s, no_force_ratio,
+      body_point_offset_range, command_name, command_threshold,
+    )
 
     # --- Constant force mode: bypass everything ---
     if constant_force is not None:
@@ -601,11 +687,10 @@ class TriangleWaveForceEvent:
 
     # --- Update phase for all non-no-force envs ---
     active = ~self._no_force_mask
-    self._force_phase_ts[active] = torch.remainder(
-      self._force_phase_ts[active] + 1.0 / self._force_duration[active], 2.0
-    )
-    self._force_phase[active] = torch.abs(
-      self._force_phase_ts[active] - 1.0
+    self._force_phase = _advance_triangle_phase(
+      self._force_phase_ts,
+      self._force_period,
+      active,
     )
 
     # --- Compute raw force from phase ---
@@ -654,22 +739,32 @@ class TriangleWaveForceEvent:
     if tor_lo != 0.0 or tor_hi != 0.0:
       torques = torch.empty_like(forces).uniform_(tor_lo, tor_hi)
 
-    if body_point_offset_range is not None:
+    if self._body_point_offset_range is not None:
       n = self._num_envs
-      offset = torch.zeros(n, 3, device=self._device)
-      for axis, key in enumerate(("x", "y", "z")):
-        lo, hi = body_point_offset_range.get(key, (0.0, 0.0))
-        offset[:, axis] = torch.empty(n, device=self._device).uniform_(lo, hi)
       body_quat = self._asset.data.body_com_quat_w[:, self._body_ids]
       offset_w = quat_apply(
         body_quat.reshape(-1, 4),
-        offset.unsqueeze(1).expand(n, self._num_bodies, 3).reshape(-1, 3),
+        self._body_point_offset_b.expand(n, self._num_bodies, 3).reshape(-1, 3),
       ).reshape(n, self._num_bodies, 3)
       torques = torques + torch.cross(offset_w, forces, dim=-1)
 
     self._asset.write_external_wrench_to_sim(
       forces, torques, body_ids=self._body_ids
     )
+
+  def _sample_body_point_offsets(
+    self, env_ids: torch.Tensor | slice
+  ) -> None:
+    """Sample episode-persistent body-frame application offsets."""
+    if self._body_point_offset_range is None:
+      self._body_point_offset_b[env_ids] = 0.0
+      return
+    n = len(env_ids) if isinstance(env_ids, torch.Tensor) else self._num_envs
+    for axis, key in enumerate(_AXES):
+      lo, hi = self._body_point_offset_range.get(key, (0.0, 0.0))
+      self._body_point_offset_b[env_ids, :, axis] = torch.empty(
+        n, 1, device=self._device
+      ).uniform_(lo, hi)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     if env_ids is None:
@@ -681,14 +776,15 @@ class TriangleWaveForceEvent:
     self._force_phase[env_ids] = torch.abs(
       torch.remainder(self._force_phase_ts[env_ids], 2.0) - 1.0
     )
-    self._force_duration[env_ids] = torch.randint(
-      self._dur_lo_steps, self._dur_hi_steps + 1,
+    self._force_period[env_ids] = torch.randint(
+      self._period_lo_steps, self._period_hi_steps + 1,
       (n, b, 1), device=self._device,
     ).float()
 
-    self._force_xyz_scale[env_ids] = torch.distributions.Dirichlet(
-      torch.tensor([1.0, 1.0, 1.0], device=self._device)
-    ).sample((n, b))
+    self._force_xyz_scale[env_ids] = _sample_enabled_axis_scales(
+      self._enabled_force_axes, (n, b), self._device
+    )
+    self._sample_body_point_offsets(env_ids)
 
     self._no_force_mask[env_ids] = (
       torch.rand(n, device=self._device) < self._no_force_ratio

@@ -214,7 +214,7 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
       },
       "force_scale": 0.0,
       "torque_range": (0.0, 0.0),
-      "duration_s": (3.0, 5.0),
+      "period_s": (6.0, 10.0),
       "no_force_ratio": 0.3,
       "body_point_offset_range": {
         "x": (-0.05, 0.05),
