@@ -153,21 +153,20 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     r"waist_pitch_joint",
   )
 
-  # Upper-body motion playback from BONES-SEED.
-  # Standing envs → manipulation gestures (bones_seed/bones_seed_x2_split.pkl).
-  # Walking envs → coordinated locomotion arm swing (bones_seed/bones_seed_locomotion_x2_split.pkl).
+  # Use manipulation motion in both standing and walking environments.  Carrying
+  # needs the policy to learn velocity tracking under the same upper-body
+  # posture distribution used for manipulation, rather than arm-swing clips.
   motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "bones_seed" / "bones_seed_x2_split.pkl")
-  loco_motion_file = str(SRC_PATH / "assets" / "data" / "x2" / "bones_seed" / "bones_seed_locomotion_x2_split.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
-    locomotion_motion_file=loco_motion_file,
+    locomotion_motion_file=None,
     motion_dof_indices=MOTION_DOF_INDICES,
     default_pose_ratio=1.0,
     command_threshold=0.1,
     waist_yaw_only=True,
     exclude_waist=True,
-    pose_only=False,
+    pose_only=True,
   )
 
   ## Commands ##
