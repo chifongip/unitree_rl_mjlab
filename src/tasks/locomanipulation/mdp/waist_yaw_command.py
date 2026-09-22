@@ -47,7 +47,7 @@ class WaistYawCommand(CommandTerm):
         nominal_mask = r.uniform_(0.0, 1.0) < self.cfg.nominal_yaw_ratio
         self._waist_yaw_command[env_ids[nominal_mask], 0] = 0.0
 
-    def _update_command(self) -> None:
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
         pass
 
 

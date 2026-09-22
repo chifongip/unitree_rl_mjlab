@@ -253,38 +253,55 @@ def _patch_command_compute(term, override: KeyboardCommandOverride, term_type: s
     original_compute = term.compute
 
     if term_type == "twist":
-        def patched_compute(dt):
-            original_compute(dt)
+        def patched_compute(
+            dt: float | torch.Tensor, env_ids: torch.Tensor | None = None
+        ) -> None:
+            original_compute(dt, env_ids)
             if override.vel_active:
+                commands = (
+                    term.vel_command_b
+                    if env_ids is None
+                    else term.vel_command_b[env_ids].clone()
+                )
                 if (override.target_vel_x == 0.0 and override.target_vel_y == 0.0
                         and override.target_ang_vel_z == 0.0):
                     d = override.decay
-                    term.vel_command_b[:, 0] *= d
-                    term.vel_command_b[:, 1] *= d
-                    term.vel_command_b[:, 2] *= d
-                    small = torch.norm(term.vel_command_b, dim=-1) < 0.1
+                    commands *= d
+                    small = torch.norm(commands, dim=-1) < 0.1
                     if small.any():
-                        term.vel_command_b[small] = 0.0
+                        commands[small] = 0.0
                 else:
-                    term.vel_command_b[:, 0] = override.target_vel_x
-                    term.vel_command_b[:, 1] = override.target_vel_y
-                    term.vel_command_b[:, 2] = override.target_ang_vel_z
+                    commands[:, 0] = override.target_vel_x
+                    commands[:, 1] = override.target_vel_y
+                    commands[:, 2] = override.target_ang_vel_z
+                if env_ids is not None:
+                    term.vel_command_b[env_ids] = commands
 
         term.compute = patched_compute
 
     elif term_type == "base_height":
-        def patched_compute(dt):
-            original_compute(dt)
+        def patched_compute(
+            dt: float | torch.Tensor, env_ids: torch.Tensor | None = None
+        ) -> None:
+            original_compute(dt, env_ids)
             if override.height_active:
-                term._height_command[:, 0] = override.target_height
+                if env_ids is None:
+                    term._height_command[:, 0] = override.target_height
+                else:
+                    term._height_command[env_ids, 0] = override.target_height
 
         term.compute = patched_compute
 
     elif term_type == "waist_yaw":
-        def patched_compute(dt):
-            original_compute(dt)
+        def patched_compute(
+            dt: float | torch.Tensor, env_ids: torch.Tensor | None = None
+        ) -> None:
+            original_compute(dt, env_ids)
             if override.waist_yaw_active:
-                term._waist_yaw_command[:, 0] = override.target_waist_yaw
+                if env_ids is None:
+                    term._waist_yaw_command[:, 0] = override.target_waist_yaw
+                else:
+                    term._waist_yaw_command[env_ids, 0] = override.target_waist_yaw
 
         term.compute = patched_compute
 

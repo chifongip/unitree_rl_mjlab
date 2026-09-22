@@ -45,7 +45,7 @@ class BaseHeightCommand(CommandTerm):
         nominal_mask = r.uniform_(0.0, 1.0) < self.cfg.nominal_height_ratio
         self._height_command[env_ids[nominal_mask], 0] = self.cfg.nominal_height
 
-    def _update_command(self) -> None:
+    def _update_command(self, env_ids: torch.Tensor | None) -> None:
         pass
 
 

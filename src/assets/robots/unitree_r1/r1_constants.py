@@ -109,8 +109,10 @@ HOME_KEYFRAME = EntityCfg.InitialStateCfg(
 # are given condim=3.
 FULL_COLLISION = CollisionCfg(
   geom_names_expr=(".*_collision",),
+  contype=1,
+  conaffinity=1,
   condim={r"^(left|right)_foot[1-7]_collision$": 3, ".*_collision": 1},
-  priority={r"^(left|right)_foot[1-7]_collision$": 1},
+  priority={r"^(left|right)_foot[1-7]_collision$": 1, ".*": 0},
   friction={r"^(left|right)_foot[1-7]_collision$": (0.6,)},
 )
 
@@ -119,7 +121,7 @@ FULL_COLLISION_WITHOUT_SELF = CollisionCfg(
   contype=0,
   conaffinity=1,
   condim={r"^(left|right)_foot[1-7]_collision$": 3, ".*_collision": 1},
-  priority={r"^(left|right)_foot[1-7]_collision$": 1},
+  priority={r"^(left|right)_foot[1-7]_collision$": 1, ".*": 0},
   friction={r"^(left|right)_foot[1-7]_collision$": (0.6,)},
 )
 

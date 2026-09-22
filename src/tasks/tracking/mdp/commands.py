@@ -362,22 +362,28 @@ class MotionCommand(CommandTerm):
 
     self.robot.clear_state(env_ids=env_ids)
 
-  def _update_command(self):
-    self.time_steps += 1
-    env_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
-    if env_ids.numel() > 0:
-      self._resample_command(env_ids)
+  def _update_command(self, env_ids: torch.Tensor | None) -> None:
+    per_step_update = env_ids is None
+    if env_ids is None:
+      env_ids = torch.arange(self.num_envs, device=self.device)
 
-    anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(
+    self.time_steps[env_ids] += 1
+    completed_env_ids = env_ids[
+      self.time_steps[env_ids] >= self.motion.time_step_total
+    ]
+    if completed_env_ids.numel() > 0:
+      self._resample_command(completed_env_ids)
+
+    anchor_pos_w_repeat = self.anchor_pos_w[env_ids, None, :].repeat(
       1, len(self.cfg.body_names), 1
     )
-    anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(
+    anchor_quat_w_repeat = self.anchor_quat_w[env_ids, None, :].repeat(
       1, len(self.cfg.body_names), 1
     )
-    robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[:, None, :].repeat(
+    robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[env_ids, None, :].repeat(
       1, len(self.cfg.body_names), 1
     )
-    robot_anchor_quat_w_repeat = self.robot_anchor_quat_w[:, None, :].repeat(
+    robot_anchor_quat_w_repeat = self.robot_anchor_quat_w[env_ids, None, :].repeat(
       1, len(self.cfg.body_names), 1
     )
 
@@ -387,12 +393,14 @@ class MotionCommand(CommandTerm):
       quat_mul(robot_anchor_quat_w_repeat, quat_inv(anchor_quat_w_repeat))
     )
 
-    self.body_quat_relative_w = quat_mul(delta_ori_w, self.body_quat_w)
-    self.body_pos_relative_w = delta_pos_w + quat_apply(
-      delta_ori_w, self.body_pos_w - anchor_pos_w_repeat
+    self.body_quat_relative_w[env_ids] = quat_mul(
+      delta_ori_w, self.body_quat_w[env_ids]
+    )
+    self.body_pos_relative_w[env_ids] = delta_pos_w + quat_apply(
+      delta_ori_w, self.body_pos_w[env_ids] - anchor_pos_w_repeat
     )
 
-    if self.cfg.sampling_mode == "adaptive":
+    if per_step_update and self.cfg.sampling_mode == "adaptive":
       self.bin_failed_count = (
         self.cfg.adaptive_alpha * self._current_bin_failed
         + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
