@@ -2,6 +2,7 @@ import os
 
 import wandb
 
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.rl.exporter_utils import (
   attach_metadata_to_onnx,
@@ -67,3 +68,32 @@ class X2_LocomanipulationOnPolicyRunner(LocomanipulationOnPolicyRunner):
     **LocomanipulationOnPolicyRunner._DEFAULT_SYMMETRY_CFG,
     "data_augmentation_func": "src.tasks.locomanipulation.mdp.symmetry.x2_locomanipulation_symmetry",
   }
+
+
+class X2_CarryFinetuneOnPolicyRunner(X2_LocomanipulationOnPolicyRunner):
+  """Keep the carry load ramp relative to the fine-tune across resumes."""
+
+  def _force_curriculum_cfg(self) -> CurriculumTermCfg:
+    return self.env.unwrapped.curriculum_manager.get_term_cfg("force_curriculum")
+
+  def load(
+    self,
+    path: str,
+    load_cfg: dict | None = None,
+    strict: bool = True,
+    map_location: str | None = None,
+  ) -> dict:
+    infos = super().load(path, load_cfg, strict, map_location)
+    env = self.env.unwrapped
+    start_step = (infos or {}).get("carry_force_start_step", env.common_step_counter)
+    force_cfg = self._force_curriculum_cfg()
+    force_cfg.params["start_step"] = start_step
+    force_cfg.func(env, None, **force_cfg.params)
+    return infos
+
+  def save(self, path: str, infos: dict | None = None) -> None:
+    infos = {
+      **(infos or {}),
+      "carry_force_start_step": self._force_curriculum_cfg().params["start_step"],
+    }
+    super().save(path, infos)

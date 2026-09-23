@@ -120,6 +120,23 @@ PREDEFINED_POSES_X2: list[dict[str, float]] = [
     "right_wrist_pitch_joint": 0.0,
     "right_wrist_roll_joint": 0.0,
   },
+  {
+    # F4: Carry-pose
+    "left_shoulder_pitch_joint": -0.081,
+    "left_shoulder_roll_joint": 0.026,
+    "left_shoulder_yaw_joint": -0.049,
+    "left_elbow_joint": -2.188,
+    "left_wrist_yaw_joint": 0.238,
+    "left_wrist_pitch_joint": 0.326,
+    "left_wrist_roll_joint": 0.215,
+    "right_shoulder_pitch_joint": -0.081,
+    "right_shoulder_roll_joint": -0.026,
+    "right_shoulder_yaw_joint": 0.049,
+    "right_elbow_joint": -2.188,
+    "right_wrist_yaw_joint": -0.238,
+    "right_wrist_pitch_joint": 0.326,
+    "right_wrist_roll_joint": -0.215,
+  },
 ]
 
 
