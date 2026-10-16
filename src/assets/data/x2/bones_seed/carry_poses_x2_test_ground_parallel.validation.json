@@ -1,0 +1,9 @@
+{
+  "poses": 512,
+  "max_hand_height_difference_m": 0.0005688751232391098,
+  "max_forward_alignment_error_m": 0.000654384738331959,
+  "max_wrist_tilt_deg": 0.9263285930446471,
+  "self_penetration_limit_m": 0.001,
+  "joint_limits_passed": true,
+  "exact_pose_overlap_with_current_training_file": 0
+}

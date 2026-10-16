@@ -132,12 +132,13 @@ def force_scale_staged(
   env_ids: torch.Tensor | slice | None,
   event_name: str,
   stages: list[ForceScaleStage],
+  start_step: int = 0,
 ) -> torch.Tensor:
-  """Set force_scale based on training step thresholds."""
+  """Set force_scale based on steps since the curriculum started."""
   del env_ids
   event_cfg = env.event_manager.get_term_cfg(event_name)
   for stage in stages:
-    if env.common_step_counter > stage["step"]:
+    if env.common_step_counter - start_step > stage["step"]:
       event_cfg.params["force_scale"] = stage["scale"]
   return torch.tensor([event_cfg.params["force_scale"]])
 
