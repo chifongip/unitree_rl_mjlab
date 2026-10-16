@@ -27,6 +27,7 @@ def _fake_runner(step: int):
     params={"event_name": "hand_force", "stages": stages, "start_step": 0},
   )
   env = SimpleNamespace(
+    cfg=SimpleNamespace(curriculum={"force_curriculum": force_cfg}),
     common_step_counter=step,
     event_manager=SimpleNamespace(get_term_cfg=lambda name: event_cfg),
     curriculum_manager=SimpleNamespace(get_term_cfg=lambda name: force_cfg),
@@ -34,6 +35,18 @@ def _fake_runner(step: int):
   runner = object.__new__(X2_CarryFinetuneOnPolicyRunner)
   runner.env = SimpleNamespace(unwrapped=env)
   return runner, env, force_cfg, event_cfg
+
+
+@pytest.mark.parametrize("manager", [SimpleNamespace(), SimpleNamespace(
+  get_term_cfg=lambda name: pytest.fail("Playback must not access a training curriculum"),
+)])
+def test_carry_checkpoint_load_without_training_curriculum(monkeypatch, manager):
+  runner, env, _, _ = _fake_runner(step=0)
+  env.cfg.curriculum = {}
+  env.curriculum_manager = manager
+  infos = {"carry_force_start_step": 240_000}
+  monkeypatch.setattr(X2_LocomanipulationOnPolicyRunner, "load", lambda *args: infos)
+  assert runner.load("carry.pt", load_cfg={"actor": True}) is infos
 
 
 def test_carry_force_ramp_starts_at_loaded_walking_step(monkeypatch):

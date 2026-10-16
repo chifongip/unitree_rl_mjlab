@@ -89,6 +89,13 @@ class UpperBodyMotionAction(ActionTerm):
     self._num_upper_dofs = len(self._joint_ids)
 
     self._num_clips = len(raw_clips)
+    indices = cfg.sample_clip_indices
+    if indices is not None and (not indices or min(indices) < 0 or max(indices) >= self._num_clips):
+      raise ValueError("sample_clip_indices must select valid motion clips")
+    self._sample_pool = torch.tensor(
+      indices if indices is not None else tuple(range(self._num_clips)),
+      device=self.device, dtype=torch.long,
+    )
     self._step_dt = env.step_dt
 
     # Pad all clips into a single tensor (num_clips, max_len, num_upper_dofs).
@@ -231,7 +238,9 @@ class UpperBodyMotionAction(ActionTerm):
       return
 
     # Sample random clips and start frames (vectorized).
-    rand_clips = torch.randint(0, self._num_clips, (count,), device=self.device)
+    rand_clips = self._sample_pool[
+      torch.randint(0, len(self._sample_pool), (count,), device=self.device)
+    ]
     clip_lens = self._clip_lengths[rand_clips]
     rand_starts = (torch.rand(count, device=self.device) * clip_lens.float()).long()
 
@@ -441,6 +450,9 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
   pose_only: bool = False
   """If True, sample a single random frame at reset and hold it for the full episode
   instead of playing back the clip frame-by-frame."""
+
+  sample_clip_indices: tuple[int, ...] | None = None
+  """Optional subset of motion clips eligible for single-dataset reset sampling."""
 
   fixed_upper_body_pose: dict[str, float] | None = None
   """If set, all envs use this exact pose instead of random sampling.

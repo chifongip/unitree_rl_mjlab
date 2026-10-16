@@ -1,8 +1,10 @@
 """Script to play RL agent with RSL-RL."""
 
 import os
+import math
 import re
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -541,6 +543,20 @@ class PlayConfig:
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
   terrain: Literal["rough", "flat"] | None = None
   """Override terrain type. Useful for evaluating a flat-trained checkpoint on rough terrain."""
+  box_mass: float | None = None
+  """X2 locomanipulation payload mass in kg; enables a rigid two-hand carry grasp."""
+  box_depth: float = 0.3
+  """Payload front-to-back dimension in meters."""
+  box_height: float = 0.25
+  """Payload height in meters. Width is fitted between the wrists."""
+  carry_pose_file: str | None = None
+  """Sample static carry poses from this dataset on every reset; requires --box-mass."""
+  carry_pose_duration: float = 10.0
+  """Seconds to test each sampled pose before resetting and sampling another."""
+  box_depth_range: tuple[float, float] | None = None
+  """Sampled payload depth bounds in meters (default with a pose file: 0.2 0.4)."""
+  box_height_range: tuple[float, float] | None = None
+  """Sampled payload height bounds in meters (default with a pose file: 0.15 0.3)."""
   params_dir: str | None = None
   """Path to params directory containing env.yaml. Auto-detected from checkpoint
   location when not specified. Use for wandb checkpoints where params/ is not
@@ -649,6 +665,29 @@ def run_play(task_id: str, cfg: PlayConfig):
       _apply_env_overrides(env_cfg, overrides)
       print(f"[INFO]: Restored env config from {params_path}")
 
+  if cfg.carry_pose_file is not None and cfg.box_mass is None:
+    raise ValueError("--carry-pose-file requires --box-mass")
+  if (cfg.box_depth_range is not None or cfg.box_height_range is not None) and cfg.carry_pose_file is None:
+    raise ValueError("Box size ranges require --carry-pose-file")
+  if cfg.box_mass is not None:
+    if "x2" not in task_id.lower() or "upper_body_motion" not in env_cfg.actions:
+      raise ValueError("--box-mass requires an X2 locomanipulation task")
+    from src.tasks.locomanipulation.config.x2.carry_box import add_carry_box
+
+    if cfg.carry_pose_file is not None:
+      from src.tasks.locomanipulation.config.x2.carry_box import add_sampled_carry_box
+
+      add_sampled_carry_box(env_cfg, cfg.carry_pose_file, cfg.box_mass,
+                            cfg.box_depth_range or (0.2, 0.4),
+                            cfg.box_height_range or (0.15, 0.3))
+      if not math.isfinite(cfg.carry_pose_duration) or cfg.carry_pose_duration <= 0:
+        raise ValueError("--carry-pose-duration must be finite and positive")
+      env_cfg.episode_length_s = cfg.carry_pose_duration
+    else:
+      add_carry_box(env_cfg, PREDEFINED_POSES_X2[3], cfg.box_mass,
+                    cfg.box_depth, cfg.box_height)
+    print(f"[INFO]: Carrying {cfg.box_mass:g} kg box with both wrists welded")
+
   # Extract nominal_height from env_cfg if base_height command exists.
   nominal_height = 0.785
   if "base_height" in env_cfg.commands:
@@ -731,7 +770,7 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     # Upper body pose switching via F8-F11 keys.
     act_mgr = env.unwrapped.action_manager
-    if "upper_body_motion" in getattr(act_mgr, "_terms", {}):
+    if "upper_body_motion" in getattr(act_mgr, "_terms", {}) and cfg.box_mass is None:
         poses = PREDEFINED_POSES_X2 if "x2" in task_id.lower() else PREDEFINED_POSES
         _patch_upper_body_pose(act_mgr._terms["upper_body_motion"], override, poses)
         pose_keys = ", ".join(f"F{i+8}=pose{i}" for i in range(len(poses)))
@@ -742,7 +781,15 @@ def run_play(task_id: str, cfg: PlayConfig):
               "7/9=yaw, +/-=height, 5=zero vel, 0=reset height")
 
   if resolved_viewer == "native":
-    NativeMujocoViewer(env, policy, key_callback=override).run()
+    existing_threads = set(threading.enumerate())
+    try:
+      NativeMujocoViewer(env, policy, key_callback=override).run()
+    finally:
+      # Passive viewer close only requests shutdown. Wait for its render thread
+      # before Python's GLFW exit handler destroys the windowing context.
+      for thread in threading.enumerate():
+        if thread not in existing_threads and "_launch_internal" in thread.name:
+          thread.join(timeout=5.0)
   elif resolved_viewer == "viser":
     ViserPlayViewer(env, policy).run()
   else:
@@ -755,7 +802,7 @@ def main():
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
   import mjlab.tasks  # noqa: F401
-  import src.tasks
+  import src.tasks  # noqa: F401
 
   all_tasks = list_tasks()
   chosen_task, remaining_args = tyro.cli(

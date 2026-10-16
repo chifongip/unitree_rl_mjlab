@@ -121,3 +121,37 @@ def test_saved_carry_poses_obey_geometry_and_collision_limits(tmp_path, monkeypa
     assert local[1, 1] <= 0.0
     assert np.abs(local[0, (0, 2)] - local[1, (0, 2)]).max() <= 0.002
     assert not generator.has_self_collision(model, data, max_penetration=0.001)
+
+
+def test_ground_parallel_saved_poses_are_level(tmp_path, monkeypatch):
+  output = tmp_path / "level_test.pkl"
+  monkeypatch.setattr(sys, "argv", [
+    str(SCRIPT_PATH), "--output", str(output), "--ground-parallel",
+    "--num-poses", "3", "--num-candidates", "30", "--frames-per-clip", "1",
+    "--endpoint-offset-lower", "-0.01", "-0.01", "-0.01",
+    "--endpoint-offset-upper", "0.01", "0.01", "0.01",
+    "--rotation-range-deg", "2", "--orientation-tolerance-deg", "1",
+  ])
+  generator.main()
+  clips = joblib.load(output)
+  assert len(clips) == 3
+  model = mujoco.MjModel.from_xml_path(str(generator.DEFAULT_XML))
+  data = mujoco.MjData(model)
+  names, addresses, _ = generator.scalar_joint_info(model)
+  ids = tuple(model.body(name).id for name in generator.END_EFFECTOR_BODY_NAMES)
+  for clip in clips.values():
+    generator.set_dof_qpos(data, clip["dof"][0], names, addresses)
+    mujoco.mj_forward(model, data)
+    positions, rotations = generator.end_effector_transforms(model, data, ids)
+    assert abs(positions[0, 2] - positions[1, 2]) <= 0.002
+    assert generator.ground_tilt_deg(rotations) <= 1.0
+    assert not generator.has_self_collision(model, data, max_penetration=0.001)
+  assert output.with_suffix(".json").exists()
+
+
+def test_level_grasp_heading_does_not_tilt_palms():
+  for yaw in np.linspace(-math.pi, math.pi, 9):
+    rotations = generator.level_grasp_rotations(yaw)
+    np.testing.assert_allclose(rotations[:, :, 0], [[0, 0, 1], [0, 0, 1]], atol=1e-15)
+    np.testing.assert_allclose(rotations[:, 2, 2], 0, atol=1e-15)
+    np.testing.assert_allclose(rotations[0], rotations[1])

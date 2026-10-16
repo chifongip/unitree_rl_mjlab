@@ -1,0 +1,40 @@
+{
+  "xml": "/home/ubuntu/unitree_rl_mjlab/src/assets/robots/agibot_x2/xmls/x2_ultra_no_head.xml",
+  "output": "src/assets/data/x2/bones_seed/carry_poses_x2_test_ground_parallel.pkl",
+  "base_pose_json": null,
+  "num_poses": 512,
+  "num_candidates": null,
+  "frames_per_clip": 60,
+  "fps": 30,
+  "seed": 43,
+  "ground_parallel": true,
+  "max_ground_tilt_deg": 1.0,
+  "translation_range": 0.5,
+  "endpoint_offset_lower": [
+    -0.15,
+    -0.15,
+    -0.15
+  ],
+  "endpoint_offset_upper": [
+    0.15,
+    0.15,
+    0.15
+  ],
+  "min_end_effector_forward": 0.05,
+  "min_end_effector_side_clearance": 0.0,
+  "rotation_range_deg": 35.0,
+  "wide_sample_ratio": 1.0,
+  "position_tolerance": 0.01,
+  "orientation_tolerance_deg": 1.0,
+  "joint_regularization": 0.0,
+  "max_end_effector_position_error": 0.02,
+  "max_end_effector_orientation_error_deg": 10.0,
+  "max_parallel_axis_error": 0.002,
+  "max_self_penetration": 0.001,
+  "playback": false,
+  "playback_file": null,
+  "playback_duration": 0.75,
+  "playback_max_poses": 0,
+  "playback_once": false,
+  "generated_poses": 512
+}

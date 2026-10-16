@@ -11,6 +11,11 @@ candidates are skipped. The resulting clips are static: every frame in a clip
 is identical, so they work with either ``pose_only=True`` or normal upper-body
 motion playback.
 
+With ``--ground-parallel``, endpoints share world height and grasp orientations
+use shared yaw only: wrist local +X points up and palm -Z stays horizontal.
+The tilted reference is omitted from the output; saved float32 poses are
+checked against ``--max-ground-tilt-deg`` as well as endpoint alignment limits.
+
 The reference pose is not a joint-space sampling bound. Generated poses may
 use the complete X2 arm joint ranges; only the model's joint limits and the
 final endpoint-target residual decide whether an IK result is retained.
@@ -127,6 +132,14 @@ def parse_args() -> argparse.Namespace:
   )
   parser.add_argument("--fps", type=int, default=30)
   parser.add_argument("--seed", type=int, default=42)
+  parser.add_argument(
+    "--ground-parallel", action="store_true",
+    help="Generate level grasps: equal world height and shared yaw-only rotation; local +X points up.",
+  )
+  parser.add_argument(
+    "--max-ground-tilt-deg", type=float, default=1.0,
+    help="Maximum saved wrist local +X tilt from world up in ground-parallel mode (default: 1 degree).",
+  )
   parser.add_argument(
     "--translation-range",
     type=float,
@@ -527,6 +540,19 @@ def sample_endpoint_targets(
   return target_positions, target_rotations, translation, rotation_vectors
 
 
+def level_grasp_rotations(yaw: float) -> np.ndarray:
+  """Orient both wrist +X axes upward and their palm -Z axes horizontally."""
+  rotation = Rotation.from_euler("z", yaw).as_matrix() @ Rotation.from_euler(
+    "y", -math.pi / 2
+  ).as_matrix()
+  return np.repeat(rotation[None], 2, axis=0)
+
+
+def ground_tilt_deg(rotations: np.ndarray) -> float:
+  """Return the greatest angle of either wrist +X axis from world up."""
+  return float(np.degrees(np.arccos(np.clip(rotations[:, 2, 0], -1.0, 1.0))).max())
+
+
 def safe_float32_dof(
   dof: np.ndarray,
   dof_names: list[str],
@@ -692,6 +718,7 @@ def main() -> None:
     args.max_end_effector_position_error,
     args.max_end_effector_orientation_error_deg,
     args.max_parallel_axis_error,
+    args.max_ground_tilt_deg,
   ]
   if args.endpoint_offset_lower is None:
     endpoint_offset_lower = np.full(3, -args.translation_range)
@@ -748,6 +775,11 @@ def main() -> None:
   )
   reference_frame_position = data.xpos[reference_frame_body_id].copy()
   reference_frame_rotation = data.xmat[reference_frame_body_id].reshape(3, 3).copy()
+  if args.ground_parallel:
+    # Retain torso heading, but remove its pitch/roll so equal sampled heights
+    # and the IK parallel constraint refer to the horizontal ground plane.
+    yaw = math.atan2(reference_frame_rotation[1, 0], reference_frame_rotation[0, 0])
+    reference_frame_rotation = Rotation.from_euler("z", yaw).as_matrix()
   reference_positions_frame = (
     reference_frame_rotation.T @ (reference_positions - reference_frame_position).T
   ).T
@@ -798,11 +830,14 @@ def main() -> None:
     ).max() > args.max_parallel_axis_error
   ):
     raise ValueError("the reference pose does not satisfy endpoint geometry limits")
-  motion_data["carry_pose_0000"] = {
-    "dof": np.repeat(seed_dof[None, :], args.frames_per_clip, axis=0),
-    "fps": args.fps,
-  }
-  print("[carry_pose_0000] reference pose")
+  if not args.ground_parallel:
+    motion_data["carry_pose_0000"] = {
+      "dof": np.repeat(seed_dof[None, :], args.frames_per_clip, axis=0),
+      "fps": args.fps,
+    }
+    print("[carry_pose_0000] reference pose")
+  else:
+    print("Ground-parallel mode: solve all poses; omit the tilted reference pose.")
   print(
     "Endpoint offset bounds in torso frame: "
     f"lower={np.round(endpoint_offset_lower, 4)}, "
@@ -831,6 +866,11 @@ def main() -> None:
       args.min_end_effector_forward,
       args.min_end_effector_side_clearance,
     )
+    if args.ground_parallel:
+      # Shared yaw varies the heading without tilting either grasp plane.
+      yaw = rng.uniform(-rotation_range_rad, rotation_range_rad)
+      target_rotations_frame = level_grasp_rotations(yaw)
+      rotation_vectors = np.repeat(np.array([[0.0, 0.0, yaw]]), 2, axis=0)
     target_positions = reference_frame_position + (
       reference_frame_rotation @ target_positions_frame.T
     ).T
@@ -886,7 +926,7 @@ def main() -> None:
     if has_self_collision(model, data, args.max_self_penetration):
       collision_skips += 1
       continue
-    saved_positions, _ = end_effector_transforms(model, data, end_effector_body_ids)
+    saved_positions, saved_rotations = end_effector_transforms(model, data, end_effector_body_ids)
     saved_positions_frame = (
       reference_frame_rotation.T @ (saved_positions - reference_frame_position).T
     ).T
@@ -897,6 +937,7 @@ def main() -> None:
       or np.abs(
         saved_positions_frame[0, (0, 2)] - saved_positions_frame[1, (0, 2)]
       ).max() > args.max_parallel_axis_error
+      or (args.ground_parallel and ground_tilt_deg(saved_rotations) > args.max_ground_tilt_deg)
     ):
       residual_skips += 1
       continue
@@ -913,7 +954,7 @@ def main() -> None:
     )
 
   print(
-    f"Accepted {len(motion_data) - 1}/{num_candidates} sampled candidates; "
+    f"Accepted {len(motion_data) - int(not args.ground_parallel)}/{num_candidates} sampled candidates; "
     f"skipped ik={ik_skips}, residual={residual_skips}, collision={collision_skips}."
   )
   if len(motion_data) < args.num_poses:
@@ -924,6 +965,9 @@ def main() -> None:
 
   args.output.parent.mkdir(parents=True, exist_ok=True)
   joblib.dump(motion_data, args.output)
+  metadata = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+  metadata["generated_poses"] = len(motion_data)
+  args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n")
   print(
     f"Wrote {args.output}: {len(motion_data)} static clips, "
     f"{args.frames_per_clip} frames/clip at {args.fps} FPS"

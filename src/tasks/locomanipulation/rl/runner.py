@@ -73,8 +73,13 @@ class X2_LocomanipulationOnPolicyRunner(LocomanipulationOnPolicyRunner):
 class X2_CarryFinetuneOnPolicyRunner(X2_LocomanipulationOnPolicyRunner):
   """Keep the carry load ramp relative to the fine-tune across resumes."""
 
-  def _force_curriculum_cfg(self) -> CurriculumTermCfg:
-    return self.env.unwrapped.curriculum_manager.get_term_cfg("force_curriculum")
+  def _force_curriculum_cfg(self) -> CurriculumTermCfg | None:
+    manager = self.env.unwrapped.curriculum_manager
+    if not hasattr(manager, "get_term_cfg"):
+      return None
+    if "force_curriculum" not in self.env.unwrapped.cfg.curriculum:
+      return None
+    return manager.get_term_cfg("force_curriculum")
 
   def load(
     self,
@@ -84,16 +89,20 @@ class X2_CarryFinetuneOnPolicyRunner(X2_LocomanipulationOnPolicyRunner):
     map_location: str | None = None,
   ) -> dict:
     infos = super().load(path, load_cfg, strict, map_location)
+    force_cfg = self._force_curriculum_cfg()
+    if force_cfg is None:
+      return infos
     env = self.env.unwrapped
     start_step = (infos or {}).get("carry_force_start_step", env.common_step_counter)
-    force_cfg = self._force_curriculum_cfg()
     force_cfg.params["start_step"] = start_step
     force_cfg.func(env, None, **force_cfg.params)
     return infos
 
   def save(self, path: str, infos: dict | None = None) -> None:
-    infos = {
-      **(infos or {}),
-      "carry_force_start_step": self._force_curriculum_cfg().params["start_step"],
-    }
+    force_cfg = self._force_curriculum_cfg()
+    if force_cfg is not None:
+      infos = {
+        **(infos or {}),
+        "carry_force_start_step": force_cfg.params["start_step"],
+      }
     super().save(path, infos)

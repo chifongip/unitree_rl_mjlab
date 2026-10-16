@@ -103,7 +103,7 @@ class UniformVelocityCommand(CommandTerm):
       )
       self.robot.write_root_state_to_sim(root_state, init_vel_env_ids)
 
-  def _update_command(self, env_ids: torch.Tensor | None) -> None:
+  def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
     if env_ids is None:
       env_ids = torch.arange(self.num_envs, device=self.device)
     if self.cfg.heading_command:
