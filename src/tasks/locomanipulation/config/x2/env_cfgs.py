@@ -17,6 +17,7 @@ from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
 from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
+from src.tasks.locomanipulation.mdp.payload import SlidingBoxForceEvent, default_payload_params
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
 from .torque_compensation import configure_x2_torque_compensation
@@ -356,7 +357,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     Path(__file__).resolve().parents[5] / "scripts" / "postures_x2_recorded.py"
   )
   _spec = _ilu.spec_from_file_location("postures_x2_recorded", _postures_path)
-  _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+  _mod = _ilu.module_from_spec(_spec)
+  _spec.loader.exec_module(_mod)
   # The resampling pipeline already clamps the exported values to the MJCF
   # joint limits.  Only select the joints used by height-posture rewards here.
   height_postures = {
@@ -540,6 +542,23 @@ def agibot_x2_locomanipulation_carry_finetune_flat_env_cfg(
   # so remove it rather than allowing non-carry episodes.
   upper_body_motion.default_pose_ratio = 0.0
   cfg.curriculum.pop("default_pose_ratio", None)
+
+  # Only carry episodes assume both hands support one shared box. Basic tasks
+  # retain their independent forces and wider manipulation-pose distribution.
+  hands = ("left_wrist_roll_link", "right_wrist_roll_link")
+  cfg.events["hand_force"] = EventTermCfg(
+    func=SlidingBoxForceEvent, mode="step",
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_names=hands, preserve_order=True),
+      "payload": default_payload_params(),
+      "force_scale": 1.0 if play else 0.0,
+      "no_force_ratio": 0.0 if play else 0.3,
+      "constant_force": {"x": 0.0, "y": 0.0, "z": 0.0} if play else None,
+    },
+  )
+  cfg.observations["critic"].terms["wrist_force"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", body_names=hands, preserve_order=True,
+  )
 
   # The carry runner sets start_step to the loaded checkpoint's step counter.
   # This gives the new posture distribution its own load ramp on fine-tuning.

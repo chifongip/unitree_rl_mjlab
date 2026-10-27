@@ -98,6 +98,21 @@ def _restore_training_torque_compensation(
     print(f"[INFO] Training torque compensation: {controller}")
 
 
+def _prepare_payload(cfg: TrainConfig, resume_path: Path | None) -> None:
+  """Restore the carry payload model before constructing a resumed environment."""
+  if resume_path is None:
+    return
+  if __package__:
+    from .play import _load_params_overrides
+  else:
+    from play import _load_params_overrides
+  from src.tasks.locomanipulation.mdp.payload import restore_payload_params
+
+  saved = _load_params_overrides(resume_path.parent / "params")
+  if saved is not None:
+    restore_payload_params(cfg.env, saved, training=True)
+
+
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
@@ -153,6 +168,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     resume_path = get_checkpoint_path(
       log_dir.parent, cfg.agent.load_run, cfg.agent.load_checkpoint
     )
+  _prepare_payload(cfg, resume_path)
   _restore_training_torque_compensation(cfg, resume_path)
 
   env = ManagerBasedRlEnv(

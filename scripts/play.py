@@ -504,6 +504,10 @@ def _apply_env_overrides(env_cfg, overrides: dict | None) -> None:
       print("\n".join(diffs))
     return
 
+  from src.tasks.locomanipulation.mdp.payload import restore_payload_params
+
+  restore_payload_params(env_cfg, overrides)
+
   def _check_and_set(path: str, current, saved) -> bool:
     """Return True and append to diffs if values differ."""
     if current != saved:
@@ -625,6 +629,8 @@ class PlayConfig:
   """Override terrain type. Useful for evaluating a flat-trained checkpoint on rough terrain."""
   box_mass: float | None = None
   """X2 locomanipulation payload mass in kg; enables a rigid two-hand carry grasp."""
+  sliding_payload: bool = False
+  """Enable the reduced sliding payload in the carry task (no physical box)."""
   box_depth: float = 0.3
   """Payload front-to-back dimension in meters."""
   box_height: float = 0.25
@@ -745,6 +751,13 @@ def run_play(task_id: str, cfg: PlayConfig):
     if overrides is not None:
       print(f"[INFO]: Restored env config from {params_path}")
 
+  if cfg.sliding_payload:
+    from src.tasks.locomanipulation.mdp.payload import enable_payload_playback
+
+    if cfg.box_mass is not None:
+      raise ValueError("--sliding-payload cannot be combined with --box-mass")
+    enable_payload_playback(env_cfg)
+
   if cfg.carry_pose_file is not None and cfg.box_mass is None:
     raise ValueError("--carry-pose-file requires --box-mass")
   if (cfg.box_depth_range is not None or cfg.box_height_range is not None) and cfg.carry_pose_file is None:
@@ -850,7 +863,7 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     # Upper body pose switching via F8-F11 keys.
     act_mgr = env.unwrapped.action_manager
-    if "upper_body_motion" in getattr(act_mgr, "_terms", {}) and cfg.box_mass is None:
+    if "upper_body_motion" in getattr(act_mgr, "_terms", {}) and cfg.box_mass is None and not cfg.sliding_payload:
         poses = PREDEFINED_POSES_X2 if "x2" in task_id.lower() else PREDEFINED_POSES
         _patch_upper_body_pose(act_mgr._terms["upper_body_motion"], override, poses)
         pose_keys = ", ".join(f"F{i+8}=pose{i}" for i in range(len(poses)))

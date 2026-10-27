@@ -94,6 +94,22 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_roll_joint": 0.0,
     },
+    "x2_carry": {
+        "left_shoulder_pitch_joint": -0.081,
+        "left_shoulder_roll_joint": 0.026,
+        "left_shoulder_yaw_joint": -0.049,
+        "left_elbow_joint": -2.188,
+        "left_wrist_yaw_joint": 0.238,
+        "left_wrist_pitch_joint": 0.326,
+        "left_wrist_roll_joint": 0.215,
+        "right_shoulder_pitch_joint": -0.081,
+        "right_shoulder_roll_joint": -0.026,
+        "right_shoulder_yaw_joint": 0.049,
+        "right_elbow_joint": -2.188,
+        "right_wrist_yaw_joint": -0.238,
+        "right_wrist_pitch_joint": 0.326,
+        "right_wrist_roll_joint": -0.215,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -101,6 +117,7 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
 # ---------------------------------------------------------------------------
 
 _FORCE_PRESETS: dict[str, dict[str, float] | dict[str, dict[str, float]] | None] = {
+    "payload": None,  # Explicit carry-only reduced dynamics, selected below.
     "none": None,
     "medium": {"x": 0.0, "y": 0.0, "z": -15.0},
     "large": {"x": 0.0, "y": 0.0, "z": -30.0},
@@ -148,12 +165,14 @@ def _apply_env_overrides(env_cfg, overrides: dict | None) -> None:
         from .play import _restore_torque_compensation
     else:
         from play import _restore_torque_compensation
+    from src.tasks.locomanipulation.mdp.payload import restore_payload_params
 
     controller = _restore_torque_compensation(env_cfg, overrides)
     if controller is not None:
         print(f"[INFO] Evaluation torque compensation: {controller}")
     if overrides is None:
         return
+    restore_payload_params(env_cfg, overrides)
     applied_params: set[tuple[int, str]] = set()
 
     for key in ("decimation", "is_finite_horizon", "scale_rewards_by_dt", "seed"):
@@ -310,7 +329,8 @@ def _configure_env_base(
     force_params = env_cfg.events["hand_force"].params
     force_params["constant_force"] = None
     force_params["no_force_ratio"] = 1.0
-    force_params["force_range_max"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)}
+    if "force_range_max" in force_params:
+        force_params["force_range_max"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)}
 
     # Disable mid-episode command resampling (velocity is set via reset only).
     long_time = float(episode_steps + 100)
@@ -324,7 +344,13 @@ def _configure_force_and_pose(
     # Force: modify event params.
     force_cfg = env.unwrapped.event_manager.get_term_cfg("hand_force")
     force_dict = _FORCE_PRESETS[force_name]
-    if force_dict is not None:
+    if force_name == "payload":
+        from src.tasks.locomanipulation.mdp.payload import SlidingBoxForceEvent
+
+        if not isinstance(force_cfg.func, SlidingBoxForceEvent):
+            raise ValueError("The payload force condition requires the carry task")
+        force_cfg.params.update(constant_force=None, no_force_ratio=0.0, force_scale=1.0)
+    elif force_dict is not None:
         force_cfg.params["constant_force"] = force_dict
         force_cfg.params["no_force_ratio"] = 0.0
     else:
