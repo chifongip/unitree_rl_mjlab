@@ -6,7 +6,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 import tyro
 
@@ -21,7 +21,7 @@ from mjlab.utils.wrappers import VideoRecorder
 
 
 def _extract_scalar_overrides(data: dict) -> dict:
-  """Extract only scalar and simple dict/list values from a nested dict."""
+  """Extract YAML-safe values, retaining tuple vectors and actuator dictionaries."""
   from enum import Enum
   result = {}
   for key, value in data.items():
@@ -33,13 +33,15 @@ def _extract_scalar_overrides(data: dict) -> dict:
       nested = _extract_scalar_overrides(value)
       if nested:
         result[key] = nested
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
       cleaned = []
       for v in value:
         if isinstance(v, Enum):
           cleaned.append(v.value)
         elif isinstance(v, (int, float, bool, str, type(None))):
           cleaned.append(v)
+        elif isinstance(v, dict):
+          cleaned.append(_extract_scalar_overrides(v))
         else:
           break
       else:
@@ -76,6 +78,24 @@ class TrainConfig:
     env_cfg = load_env_cfg(task_id)
     agent_cfg = load_rl_cfg(task_id)
     return TrainConfig(env=env_cfg, agent=agent_cfg)
+
+
+def _restore_training_torque_compensation(
+  cfg: TrainConfig, resume_path: Path | None,
+) -> None:
+  """Restore checkpoint dynamics; controller choices belong to the environment."""
+  if resume_path is None:
+    return
+  if __package__:
+    from .play import _load_params_overrides, _restore_torque_compensation
+  else:
+    # Direct ``python scripts/train.py`` puts scripts/ on sys.path.
+    from play import _load_params_overrides, _restore_torque_compensation
+
+  saved = _load_params_overrides(resume_path.parent / "params")
+  controller = _restore_torque_compensation(cfg.env, saved)
+  if controller is not None:
+    print(f"[INFO] Training torque compensation: {controller}")
 
 
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
@@ -128,18 +148,16 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
 
+  resume_path: Path | None = None
+  if cfg.agent.resume:
+    resume_path = get_checkpoint_path(
+      log_dir.parent, cfg.agent.load_run, cfg.agent.load_checkpoint
+    )
+  _restore_training_torque_compensation(cfg, resume_path)
+
   env = ManagerBasedRlEnv(
     cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
   )
-
-  log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
-
-  resume_path: Path | None = None
-  if cfg.agent.resume:
-      # Load checkpoint from local filesystem.
-      resume_path = get_checkpoint_path(
-        log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint
-      )
 
   # Only record videos on rank 0 to avoid multiple workers writing to the same files.
   if cfg.video and rank == 0:
@@ -236,7 +254,7 @@ def main():
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
   import mjlab.tasks  # noqa: F401
-  import src.tasks
+  import src.tasks  # noqa: F401
 
   all_tasks = list_tasks()
   chosen_task, remaining_args = tyro.cli(

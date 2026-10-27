@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING
 import joblib
 import torch
 
+from mjlab.actuator.actuator import TransmissionType
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from src.instinct_mj.controllers import BatchedJointObserver, JointObserverCfg
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -97,6 +99,11 @@ class UpperBodyMotionAction(ActionTerm):
       device=self.device, dtype=torch.long,
     )
     self._step_dt = env.step_dt
+
+    self._observer: BatchedJointObserver | None = None
+    self._observer_update_pending = True
+    if cfg.observer is not None:
+      self._initialize_observer(cfg.observer)
 
     # Pad all clips into a single tensor (num_clips, max_len, num_upper_dofs).
     max_len = max(len(c) for c in raw_clips)
@@ -198,8 +205,10 @@ class UpperBodyMotionAction(ActionTerm):
 
   def process_actions(self, actions: torch.Tensor) -> None:
     del actions
+    self._observer_update_pending = True
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    self._reset_observer(env_ids)
     if env_ids is None:
       env_ids = slice(None)
 
@@ -368,6 +377,69 @@ class UpperBodyMotionAction(ActionTerm):
   def apply_actions(self) -> None:
     target = self._gather_targets()
     self._entity.set_joint_position_target(target, joint_ids=self._joint_ids)
+    if self._observer is not None:
+      if self._observer_update_pending:
+        # These are encoder/velocity feedback channels, also available on the
+        # robot. Policy observations and their corruption are not involved.
+        q = self._entity.data.joint_pos_biased[:, self._observer_joint_ids]
+        qd = self._entity.data.joint_vel[:, self._observer_joint_ids]
+        settings = self._observer.cfg
+        if settings.position_noise_std:
+          q = q + torch.randn_like(q) * settings.position_noise_std
+        if settings.velocity_noise_std:
+          qd = qd + torch.randn_like(qd) * settings.velocity_noise_std
+        self._observer.step(target[:, self._observer_target_cols], q, qd, self._step_dt)
+        self._observer_update_pending = False
+      self._entity.set_joint_effort_target(
+        self._observer.effort, joint_ids=self._observer_joint_ids
+      )
+
+  def _initialize_observer(self, cfg: JointObserverCfg) -> None:
+    """Resolve explicit joint-name order and controller-known actuator settings."""
+    from src.assets.robots.agibot_x2.compensated_actuator import CompensatedPositionActuator
+
+    joint_ids = [self._entity.joint_names.index(name) for name in cfg.joint_names]
+    if any(j not in self._joint_ids for j in joint_ids):
+      raise ValueError("Observer joints must be owned by upper-body motion playback")
+    if any(name.startswith("waist_") for name in cfg.joint_names):
+      raise ValueError("Torque compensation is restricted to arm joints")
+    self._observer_target_cols = [self._joint_ids.index(j) for j in joint_ids]
+    # Entity setters require tensor joint IDs for outer indexing when env_ids
+    # is also a tensor (as it is during partial and automatic resets).
+    self._observer_joint_ids = torch.tensor(
+      joint_ids, device=self.device, dtype=torch.long
+    )
+    gains: list[float] = []
+    damping: list[float] = []
+    limits: list[float] = []
+    for name in cfg.joint_names:
+      matching = [
+        a for a in self._entity.actuators
+        if a.transmission_type == TransmissionType.JOINT and name in a.target_names
+      ]
+      if len(matching) != 1 or not isinstance(matching[0], CompensatedPositionActuator):
+        raise ValueError(f"Observer joint {name} requires a compensated position actuator")
+      actuator = matching[0].cfg
+      if actuator.effort_limit is None:
+        raise ValueError(f"Observer joint {name} requires an actuator effort limit")
+      if actuator.delay_max_lag:
+        raise ValueError("Synchronous observer requires zero command transport delay")
+      gains.append(actuator.stiffness)
+      damping.append(actuator.damping)
+      limits.append(actuator.effort_limit)
+    self._observer = BatchedJointObserver(
+      cfg, tuple(gains), tuple(damping), tuple(limits),
+      num_envs=self.num_envs, device=self.device,
+      dtype=self._entity.data.joint_pos.dtype,
+    )
+
+  def _reset_observer(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if self._observer is not None:
+      self._observer.reset(env_ids)
+      ids = slice(None) if env_ids is None else env_ids
+      self._entity.set_joint_effort_target(
+        self._observer.effort[ids], joint_ids=self._observer_joint_ids, env_ids=ids
+      )
 
   def set_fixed_pose(self, pose_dict: dict[str, float] | None) -> None:
     """Set a fixed upper body pose for all environments (runtime override).
@@ -391,6 +463,10 @@ class UpperBodyMotionAction(ActionTerm):
 
     self._fixed_pose = fixed
     self._pose_target[:] = fixed.unsqueeze(0).expand_as(self._pose_target)
+    # This method teleports the simulated joint state. Discard pre-teleport
+    # predictor history and queued correction in the same call.
+    self._reset_observer()
+    self._observer_update_pending = True
     self._entity.write_joint_state_to_sim(
       self._pose_target,
       torch.zeros_like(self._pose_target),
@@ -421,6 +497,12 @@ class UpperBodyMotionActionCfg(ActionTermCfg):
   motion_file: str = ""
   """Path to the pkl motion file (standing / manipulation data when
   locomotion_motion_file is set)."""
+
+  observer: JointObserverCfg | None = None
+  """Optional internal arm controller. Adds no policy actions or observations."""
+
+  restore_observer_from_checkpoint: bool = True
+  """Restore saved arm control; False keeps this environment's controller for fine-tuning."""
 
   locomotion_motion_file: str | None = None
   """Optional path to a second motion pkl used when the velocity command

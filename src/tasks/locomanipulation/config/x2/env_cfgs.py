@@ -19,6 +19,7 @@ from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
 from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
+from .torque_compensation import configure_x2_torque_compensation
 
 
 # 29-DOF motion data column indices for the 14 upper-body DOFs.
@@ -167,6 +168,15 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     waist_yaw_only=True,
     exclude_waist=True,
     pose_only=True,
+    restore_observer_from_checkpoint=True,
+  )
+  # Flat and carry fine-tuning inherit the same deployment arm controller.
+  configure_x2_torque_compensation(
+    cfg,
+    algorithm="nonlinear",
+    mode="ACTIVE",
+    correction_limit_fraction=0.8,
+    correction_limit_nm=0.0,  # No absolute Nm cap; use the actuator-limit fraction.
   )
 
   ## Commands ##

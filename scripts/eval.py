@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import csv
 import json
-import re
 import time
 from dataclasses import asdict, dataclass
 from itertools import product
@@ -110,67 +109,17 @@ _FORCE_PRESETS: dict[str, dict[str, float] | dict[str, dict[str, float]] | None]
 
 
 # ---------------------------------------------------------------------------
-# Param override helpers (duplicated from play.py).
+# Param override helpers.
 # ---------------------------------------------------------------------------
 
-_PYTHON_TAG_RE = re.compile(r"!!python/\S+")
-
-
 def _load_params_overrides(params_dir: Path) -> dict | None:
-    """Load safe scalar/dict overrides from training params directory."""
-    clean_path = params_dir / "env_overrides.yaml"
-    if clean_path.exists():
-        try:
-            data = yaml.safe_load(clean_path.read_text())
-            if isinstance(data, dict):
-                _supplement_obs_terms(data, params_dir)
-                return data
-            return None
-        except Exception as e:
-            print(f"[WARN] Could not load {clean_path}: {e}")
+    """Use playback's loader, including legacy controller supplementation."""
+    if __package__:
+        from .play import _load_params_overrides as load
+    else:
+        from play import _load_params_overrides as load
 
-    full_path = params_dir / "env.yaml"
-    if not full_path.exists():
-        return None
-    try:
-        text = full_path.read_text()
-        cleaned = _PYTHON_TAG_RE.sub("", text)
-        data = yaml.safe_load(cleaned)
-        return data if isinstance(data, dict) else None
-    except Exception as e:
-        print(f"[WARN] Could not load params from {full_path}: {e}")
-        return None
-
-
-def _supplement_obs_terms(data: dict, params_dir: Path) -> None:
-    """Fill missing observation term params from env.yaml."""
-    obs_data = data.get("observations")
-    if not isinstance(obs_data, dict):
-        return
-    for group_data in obs_data.values():
-        if isinstance(group_data, dict) and "terms" in group_data:
-            return
-
-    full_path = params_dir / "env.yaml"
-    if not full_path.exists():
-        return
-    try:
-        text = full_path.read_text()
-        cleaned = _PYTHON_TAG_RE.sub("", text)
-        full_data = yaml.safe_load(cleaned)
-    except Exception:
-        return
-
-    if not isinstance(full_data, dict):
-        return
-    full_obs = full_data.get("observations")
-    if not isinstance(full_obs, dict):
-        return
-    for group_name, group_data in full_obs.items():
-        if not isinstance(group_data, dict):
-            continue
-        if "terms" in group_data and group_name in obs_data:
-            obs_data[group_name]["terms"] = group_data["terms"]
+    return load(params_dir)
 
 
 def _extract_fixed_height_from_params(params_dir: Path) -> float | None:
@@ -193,8 +142,18 @@ def _extract_fixed_height_from_params(params_dir: Path) -> float | None:
     return None
 
 
-def _apply_env_overrides(env_cfg, overrides: dict) -> None:
+def _apply_env_overrides(env_cfg, overrides: dict | None) -> None:
     """Apply scalar/dict overrides from saved training params."""
+    if __package__:
+        from .play import _restore_torque_compensation
+    else:
+        from play import _restore_torque_compensation
+
+    controller = _restore_torque_compensation(env_cfg, overrides)
+    if controller is not None:
+        print(f"[INFO] Evaluation torque compensation: {controller}")
+    if overrides is None:
+        return
     applied_params: set[tuple[int, str]] = set()
 
     for key in ("decimation", "is_finite_horizon", "scale_rewards_by_dt", "seed"):
@@ -538,8 +497,7 @@ def _build_env(
     if is_trained and ckpt.log_dir is not None:
         params_path = Path(cfg.params_dir) if cfg.params_dir else ckpt.log_dir / "params"
         overrides = _load_params_overrides(params_path)
-        if overrides is not None:
-            _apply_env_overrides(env_cfg, overrides)
+        _apply_env_overrides(env_cfg, overrides)
 
     _configure_env_base(env_cfg, num_envs_override or cfg.num_envs, ckpt.fixed_height, cfg.episode_steps, task_id=ckpt.task_id)
 
