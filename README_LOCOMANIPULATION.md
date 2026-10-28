@@ -215,7 +215,23 @@ python scripts/train.py Agibot-X2-Locomanipulation-Carry-Finetune-Flat \
 
 `default_pose_ratio=0.15` stays fixed throughout fine-tuning. `no_force_ratio=0.3` is the total unloaded fraction, including default-posture episodes, which always receive zero hand payload forces and torques. Adjust the posture fraction with `--env.actions.upper-body-motion.default-pose-ratio`; it must not exceed `no_force_ratio`. Grasp validity and the force curriculum can further reduce loading.
 
-Fine-tuning restarts only the hand-force ramp; height and waist curricula retain their checkpoint progress. Resuming a carry checkpoint retains its force-ramp progress too.
+The carry task samples an episode mass uniformly from a configurable 0–6 kg
+range (including fixed zero or fixed six). At every policy step, the original
+`MaxForceEstimator` limits the complete requested wrench using both hands'
+forces and torques together. A common scale in [0, 1] preserves their proportions
+and keeps predicted supporting effort within 90% of the live arm effort limits.
+Mass, pose sampling and the internal payload dynamics stay unchanged.
+This instantaneous estimate preserves the current acceleration; it cannot
+guarantee future tracking or grasp stability. An empty feasible scale interval
+applies zero wrench and logs infeasibility; an existing actuator overload may
+remain. Explicit constant-force and physical-box presets bypass this limiter.
+
+Fine-tuning restarts only the hand-force ramp; height and waist curricula retain
+their checkpoint progress. Resuming a carry checkpoint retains its force-ramp
+progress, including when payload settings change.
+Playback/evaluation of saved legacy settings without torque bounds retains the
+original unbounded wrench behavior. New carry training enables bounds by
+default; `events["hand_force"].params["torque_bounds"]` contains their settings.
 
 Playback inherits the X2 defaults: arms-down fixed pose, zero hand force, and zero velocity command. Use `--sliding-payload True` to sample carry poses with the reduced payload model.
 

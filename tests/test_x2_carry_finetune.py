@@ -66,8 +66,11 @@ def test_carry_force_ramp_starts_at_loaded_walking_step(monkeypatch):
   assert event_cfg.params["force_scale"] == pytest.approx(0.5)
 
 
-def test_carry_force_ramp_survives_carry_checkpoint(monkeypatch):
+@pytest.mark.parametrize("payload", [None, {"mass_range_kg": (0., 6.)}])
+def test_carry_force_ramp_survives_carry_checkpoint(monkeypatch, payload):
   runner, env, force_cfg, event_cfg = _fake_runner(step=0)
+  if payload is not None:
+    event_cfg.params["payload"] = payload
 
   def load_checkpoint(self, path, load_cfg, strict, map_location):
     env.common_step_counter = 240_050
@@ -85,7 +88,7 @@ def test_carry_force_ramp_survives_carry_checkpoint(monkeypatch):
 
   assert force_cfg.params["start_step"] == 240_000
   assert event_cfg.params["force_scale"] == 1.0
-  assert saved_infos["carry_force_start_step"] == 240_000
+  assert saved_infos == {"carry_force_start_step": 240_000}
 
 
 def test_carry_playback_inherits_parent_play_settings():

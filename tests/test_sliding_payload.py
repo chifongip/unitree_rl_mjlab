@@ -86,6 +86,139 @@ def call(event, env, params):
   event(env, None, **params)
 
 
+def bounded_event(n=3, scale=0.25, **parameters):
+  """Inject a deterministic scale to isolate event lifecycle and dynamics."""
+  from src.tasks.locomanipulation.mdp.events import WrenchScaleEstimate
+
+  event, env, params, data = make_event(n=n, **parameters)
+  env.extras = {"log": {}}
+
+  def estimate(env, forces, torques):
+    empty = torch.zeros(n, 1)
+    return WrenchScaleEstimate(
+      torch.full((n,), scale), torch.full((n,), scale > 0),
+      empty, empty, empty - 9, empty + 9,
+    )
+
+  event._torque_estimator = SimpleNamespace(estimate_wrench_scale=estimate)
+  return event, env, params, data
+
+
+def test_common_scale_preserves_mass_pose_and_payload_dynamics():
+  event, env, params, data = bounded_event()
+  reference, ref_env, ref_params, ref_data = make_event()
+  for step in range(3):
+    tilt_hands(data, pitch=0.2)
+    tilt_hands(ref_data, pitch=0.2)
+    data.body_com_lin_vel_w[..., 2] = step * 0.3
+    ref_data.body_com_lin_vel_w[:] = data.body_com_lin_vel_w
+    call(event, env, params)
+    call(reference, ref_env, ref_params)
+    torch.testing.assert_close(event._requested_wrench, ref_data.body_external_wrench)
+    torch.testing.assert_close(data.body_external_wrench, event._requested_wrench * .25)
+    for name in ("_mass", "_position", "_velocity", "_acceleration", "_omega", "_angular_acceleration"):
+      torch.testing.assert_close(getattr(event, name), getattr(reference, name))
+    assert env.action_manager.get_term("upper_body_motion")._clip_idx.tolist() == [0, 0, 0]
+  assert event._requested_wrench[..., 3:].abs().max() > 0
+  assert all(torch.isfinite(value) for value in env.extras["log"].values())
+
+
+def test_zero_scale_keeps_dynamics_and_partial_reset_is_isolated():
+  event, env, params, data = bounded_event(scale=0.)
+  tilt_hands(data, pitch=0.2)
+  call(event, env, params)
+  assert event._initialized.all()
+  assert event._no_force_mask.all()
+  assert not data.body_external_wrench.any()
+  assert not event._wrench_feasible.any()
+  before = {name: getattr(event, name).clone() for name in (
+    "_mass", "_requested_wrench", "_position", "_wrench_scale", "_wrench_feasible",
+  )}
+  event.reset(torch.tensor([0]))
+  for name, value in before.items():
+    torch.testing.assert_close(getattr(event, name)[1:], value[1:])
+  assert event._wrench_scale[0] == 1
+  assert event._wrench_feasible[0]
+  assert not event._requested_wrench[0].any()
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("component", ["force", "torque"])
+@pytest.mark.parametrize("active", [True, False])
+def test_nonfinite_requests_write_zero_wrench_and_keep_logs_finite(monkeypatch, bad, component, active):
+  from src.tasks.locomanipulation.mdp import payload as payload_module
+  from src.tasks.locomanipulation.mdp.events import WrenchScaleEstimate, maximum_wrench_scale
+
+  event, env, params, data = bounded_event(n=2)
+  if not active:
+    event._episode_draw[0] = 0
+    event._episode_draw[1] = 1
+    params["no_force_ratio"] = .5
+
+  def estimate(env, forces, torques):
+    requested = (forces.sum((1, 2)) + torques.sum((1, 2)))[:, None]
+    baseline = torch.zeros_like(requested)
+    lower, upper = baseline - 9, baseline + 9
+    scale, feasible = maximum_wrench_scale(baseline, requested, lower, upper)
+    return WrenchScaleEstimate(
+      scale, feasible, baseline - requested, baseline - scale[:, None] * requested,
+      lower, upper,
+    )
+
+  event._torque_estimator.estimate_wrench_scale = estimate
+  distribute = payload_module.distribute_hand_wrench
+
+  def nonfinite_request(*args):
+    forces, torques = distribute(*args)
+    forces, torques = forces.clone(), torques.clone()
+    (forces if component == "force" else torques)[0, 0, 0] = bad
+    return forces, torques
+
+  monkeypatch.setattr(payload_module, "distribute_hand_wrench", nonfinite_request)
+  call(event, env, params)
+  assert torch.isfinite(data.body_external_wrench).all()
+  assert not data.body_external_wrench[0].any()
+  assert event._wrench_scale[0] == 0
+  assert not event._wrench_feasible[0]
+  assert event._no_force_mask[0]
+  torch.testing.assert_close(
+    data.body_external_wrench[1], event._requested_wrench[1] * event._wrench_scale[1],
+  )
+  assert data.body_external_wrench[1].any()
+  assert all(torch.isfinite(value) for value in env.extras["log"].values())
+  assert env.extras["log"]["Metrics/payload_nonfinite_request"] == (.5 if active else 0.)
+
+  # Rejecting one request must not poison subsequent estimates or other worlds.
+  monkeypatch.setattr(payload_module, "distribute_hand_wrench", distribute)
+  call(event, env, params)
+  assert torch.isfinite(data.body_external_wrench).all()
+  assert event._wrench_feasible.all()
+  assert env.extras["log"]["Metrics/payload_nonfinite_request"] == 0
+
+
+@pytest.mark.parametrize("mass", [0., 6.])
+def test_fixed_mass_endpoints_are_finite_and_zero_mass_is_unloaded(mass):
+  event, env, params, data = bounded_event(mass_range_kg=(mass, mass))
+  for _ in range(2):
+    call(event, env, params)
+    assert torch.isfinite(data.body_external_wrench).all()
+    assert (event._mass == mass).all()
+    assert all(torch.isfinite(value) for value in env.extras["log"].values())
+  if mass == 0:
+    assert not data.body_external_wrench.any()
+    assert event._no_force_mask.all()
+  else:
+    assert data.body_external_wrench.any()
+
+
+def test_constant_presets_keep_explicit_override_behavior():
+  event, env, params, data = bounded_event()
+  event._torque_estimator.estimate_wrench_scale = lambda *args: pytest.fail("Preset bypasses limiter")
+  params["constant_force"] = {"x": 0., "y": 0., "z": -10.}
+  call(event, env, params)
+  torch.testing.assert_close(data.body_external_wrench[..., 2], torch.full((3, 2), -10.))
+
+
 def tilt_hands(data, *, roll=0.0, pitch=0.0, yaw=0.0):
   n = data.body_com_pos_w.shape[0]
   quat = quat_from_euler_xyz(
@@ -600,6 +733,9 @@ def test_wall_impulse_and_final_state_agree_at_two_timesteps():
   "name,value",
   [
     ("mass_range_kg", (4, 1)),
+    ("mass_range_kg", (-1, 6)),
+    ("mass_range_kg", (0, 6.1)),
+    ("mass_range_kg", (0, float("nan"))),
     ("travel_xy_m", (-1, 1)),
     ("contents_fraction", 1.1),
     ("damping_per_s", -1),
@@ -644,6 +780,7 @@ def test_payload_roundtrip_train_play_and_eval_preserves_play_overrides(tmp_path
   training = carry_cfg()
   training.events["hand_force"].params["payload"]["mass_range_kg"] = (1.5, 3.5)
   training.events["hand_force"].params["no_force_ratio"] = 0.45
+  training.events["hand_force"].params["torque_bounds"]["effort_limit_scale"] = .8
   params_dir = tmp_path / "params"
   _dump_env_overrides_yaml(params_dir / "env_overrides.yaml", asdict(training))
   saved = _load_params_overrides(params_dir)
@@ -655,6 +792,10 @@ def test_payload_roundtrip_train_play_and_eval_preserves_play_overrides(tmp_path
       == training.events["hand_force"].params["payload"]
     )
     assert playback.events["hand_force"].params["constant_force"] == {"x": 0, "y": 0, "z": 0}
+    assert (
+      playback.events["hand_force"].params["torque_bounds"]
+      == training.events["hand_force"].params["torque_bounds"]
+    )
   resumed = carry_cfg()
   _prepare_payload(
     TrainConfig(env=resumed, agent=agibot_x2_locomanipulation_ppo_runner_cfg()),
@@ -670,6 +811,27 @@ def test_payload_roundtrip_train_play_and_eval_preserves_play_overrides(tmp_path
   del saved["events"]["hand_force"]["params"]["payload"]["contents_fraction"]
   with pytest.raises(ValueError, match="required fields"):
     restore_payload_params(carry_cfg(), saved)
+
+
+def test_legacy_payload_restore_preserves_evaluation_and_migrates_training():
+  legacy = {"events": {"hand_force": {"params": {"payload": default_payload_params()}}}}
+  playback = carry_cfg(play=True)
+  restore_payload_params(playback, legacy)
+  assert playback.events["hand_force"].params["torque_bounds"] is None
+  training = carry_cfg()
+  restore_payload_params(training, legacy, training=True)
+  assert training.events["hand_force"].params["torque_bounds"]["enabled"]
+
+
+def test_invalid_torque_restore_is_atomic():
+  cfg = carry_cfg()
+  before = deepcopy(cfg.events["hand_force"].params)
+  saved = deepcopy(before)
+  saved["payload"]["mass_range_kg"] = (1., 3.)
+  saved["torque_bounds"]["effort_limit_scale"] = 0
+  with pytest.raises(ValueError, match="torque_bounds"):
+    restore_payload_params(cfg, {"events": {"hand_force": {"params": saved}}}, training=True)
+  assert cfg.events["hand_force"].params == before
 
 
 def test_explicit_payload_playback_uses_carry_dataset_and_physical_box_disables_load():

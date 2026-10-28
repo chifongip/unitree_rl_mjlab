@@ -17,10 +17,12 @@ from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
 from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
-from src.tasks.locomanipulation.mdp.payload import SlidingBoxForceEvent, default_payload_params
+from src.tasks.locomanipulation.mdp.payload import (
+  SlidingBoxForceEvent, default_payload_params, default_torque_bounds,
+)
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
-from .torque_compensation import configure_x2_torque_compensation
+from .torque_compensation import X2_OBSERVER_JOINT_NAMES, configure_x2_torque_compensation
 
 
 # 29-DOF motion data column indices for the 14 upper-body DOFs.
@@ -551,6 +553,7 @@ def agibot_x2_locomanipulation_carry_finetune_flat_env_cfg(
       "asset_cfg": SceneEntityCfg("robot", body_names=hands, preserve_order=True),
       "upper_body_action_name": "upper_body_motion",
       "payload": default_payload_params(),
+      "torque_bounds": default_torque_bounds(X2_OBSERVER_JOINT_NAMES),
       "force_scale": 1.0 if play else 0.0,
       # Total unloaded fraction: 15% default poses plus 15% carry poses.
       "no_force_ratio": 0.0 if play else 0.3,

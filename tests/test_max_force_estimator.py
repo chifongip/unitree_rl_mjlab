@@ -418,3 +418,33 @@ def test_invalid_jacobian_tolerance_is_rejected(tolerance):
       env, asset, ("hand",), constraint_joint_names=("arm",),
       jacobian_zero_tolerance=tolerance,
     )
+
+
+@pytest.mark.parametrize("torque_only", [False, True])
+def test_bilateral_wrench_sums_shared_joint_and_removes_previous_applied_load(torque_only):
+  """Each hand alone fits; their combined request must be reduced together."""
+  jac = torch.zeros(2, 3, 7)
+  jac[:, 2, 6] = 1
+  zeros = torch.zeros_like(jac)
+  estimator, env, asset = _build_estimator(
+    [jac, jac], body_names=("left", "right"),
+    mappings={"left": ("arm",), "right": ("arm",)},
+    baseline=torch.full((2, 1), 2.),
+  )
+  estimator._wrench_joint_ids = torch.tensor([0])
+  estimator._wrench_dof_adr = torch.tensor([6])
+  estimator._wrench_effort_bounds = lambda env: (torch.full((2, 1), -9.), torch.full((2, 1), 9.))
+  request = torch.zeros(2, 2, 3)
+  request[..., 2] = -8
+  zero_request = torch.zeros_like(request)
+  forces, torques = (zero_request, request) if torque_only else (request, zero_request)
+  # Applied old total Q=-4; baseline is 2-4=-2, not current actuator effort 2.
+  asset.data.body_external_wrench[..., 5 if torque_only else 2] = -2
+  patches = _warp_patches([zeros, zeros] if torque_only else [jac, jac],
+                          rotational_jacobians=[jac, jac] if torque_only else None)
+  with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    result = estimator.estimate_wrench_scale(env, forces, torques)
+  torch.testing.assert_close(result.scale, torch.full((2,), 11 / 16))
+  torch.testing.assert_close(result.requested_effort, torch.full((2, 1), 14.))
+  torch.testing.assert_close(result.applied_effort, torch.full((2, 1), 9.))
+  assert result.feasible.all()

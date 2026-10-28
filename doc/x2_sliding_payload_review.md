@@ -6,9 +6,55 @@ only in `Agibot-X2-Locomanipulation-Carry-Finetune-Flat`. Basic flat/rough tasks
 retain their existing force events and general manipulation data.
 
 The event uses batched Torch operations once per 20 ms policy step. It adds no
-MuJoCo bodies, contacts, constraints, physics substeps or Jacobian calculations.
-Observation/reward functions and dimensions, symmetry, the force curriculum,
-and carry checkpoint progress remain unchanged.
+MuJoCo bodies, contacts, constraints or physics substeps. The bounded task adds
+two hand Jacobians for full-wrench torque estimation. Observations, rewards and
+symmetry retain their dimensions and definitions.
+
+## Torque-aware applied wrenches
+
+New carry training extends the original `MaxForceEstimator` with a full bilateral
+wrench limiter and a 90% effort envelope on the 14 arm joints. Mass is sampled
+once per episode from the configured interval within 0–6 kg. Fixed zero and fixed
+six are valid. Pose sampling and internal shell/contents dynamics are unchanged.
+
+At each policy step, current COM Jacobians map world-frame forces and torques:
+`Q = sum_h(Jv_h.T @ F_h + Jw_h.T @ T_h)`. Holding the current state and
+acceleration fixed, replacing the previously applied wrench requires
+`tau_new = tau_current + Q_previous_applied - alpha * Q_requested`.
+For every selected joint, the signed inequalities
+`lower <= tau_new <= upper` define an interval in `alpha`. The solver intersects
+all intervals with [0, 1] and chooses the largest feasible value. Zero coefficients
+are handled without division by zero. One scale multiplies all six wrench
+components on both hands, including shared-joint contributions.
+
+Limits are read from live native force ranges, joint sum ranges and software
+limits, including per-environment randomization, before applying the reserve.
+The supported mapping is one direct unit-gear hinge actuator per constrained
+joint. Jacobian queries do not modify the live dynamics state. The previous
+wrench is the actual applied load, so repeated clipping does not count an
+unapplied request as support.
+
+An empty interval returns zero load and an infeasibility flag. This fallback
+cannot remove a pre-existing overload when no load scale is feasible. The
+estimate is instantaneous and conditional on unchanged acceleration; it does
+not guarantee actual closed-loop torque, future tracking or grasp stability.
+Clipped wrenches represent a bounded disturbance and need not equal the full
+reaction of the sampled physical mass. Internal payload dynamics still use the
+sampled mass and existing curriculum multiplier.
+
+Every loaded step logs requested/applied force and torque norms, mass, wrench
+scale, infeasibility, non-finite requests and actual loaded fraction. Rejected
+requests explicitly produce zero forces and torques, including NaN/Inf inputs.
+Undefined request norms log zero and are identified by the non-finite metric.
+Explicit constant-force overrides retain their existing bypass; physical-box
+playback disables the reduced load to prevent double loading.
+
+Flat-to-carry transfers start a fresh load ramp. Carry resumes preserve the saved
+`carry_force_start_step`, including when payload settings change.
+Bounds are restored with saved train/play/eval settings.
+Legacy playback/evaluation metadata without bounds disables them; a legacy
+training transfer keeps the new task's bounds. Setting `torque_bounds` to `None`
+or its `enabled` field to `False` disables wrench limiting.
 
 ## Mechanics and settings
 
@@ -34,7 +80,7 @@ YAML and restored by train/play/eval. Episode sampling is configured separately:
 
 | Setting | Default |
 | --- | --- |
-| Total mass / moving contents fraction | Uniform 2–6 kg / 75% |
+| Requested mass range / moving contents fraction | 0–6 kg / 75%; uniform within the configured interval |
 | Contents travel | +/-10 cm forward, +/-8 cm lateral |
 | Static / kinetic friction | 0.15 / 0.10 |
 | Wall restitution / damping | 0.10 / 1 per second |
@@ -72,10 +118,9 @@ the reduced load to prevent double loading.
 Partial resets clear only the selected environments' state and wrenches; the
 first active sample initializes derivative history without an acceleration spike.
 
-Only the current tilting model is retained. Settings contain physical parameters
+Only the current tilting model is retained. Physical settings contain parameters
 without a version tag; restore discards the obsolete tag in previously saved
-settings. Missing or unexpected parameter fields fail explicitly. Older policy
-checkpoints without payload metadata use current carry settings.
+settings. Missing or unexpected parameter fields fail explicitly.
 
 ## Visualization
 
@@ -116,12 +161,24 @@ conservation, reset isolation, configuration restore, basic-task isolation,
 visualization and headless environment integration. Review also checks invalid
 restore atomicity, unloaded episode budgets, constant-force reset overrides and
 consistent inertia/display geometry for narrow grasps.
-Validation: **310 passed, 15 skipped**. Ruff passed for the changed Python files.
+Torque-bound tests additionally check signed scale intervals, coupled hand
+forces and torques, previous applied load compensation, independent MuJoCo
+wrench mappings, live per-world limits, zero mass, reset isolation and
+checkpoint resume behavior. GPU validation exercises batched environments
+and short PPO training; these checks do not establish carrying stability.
 
-The cleanup reproduces the previous tilting model's entire recorded eight-second
-checkpoint trace exactly: contents positions, hand vertical forces, inferred tilt,
-mass and activation flags. That trial uses seed 123, a 3.81 kg payload and a
-0.3 m/s walking command, with no episode resets.
+Validation on 2026-10-28: **368 passed, 16 skipped** in the full CPU suite;
+**21 passed** in the torque-bound tests with CUDA available. Ruff and
+`git diff --check` passed. An RTX 4090 Laptop GPU smoke run covered 256
+environments for 96 steps, 4,096 environments for eight steps, fixed 0/6 kg
+loads, partial resets, two PPO updates at full payload scale, flat-checkpoint transfer, ONNX export
+and a fresh carry-checkpoint resume. Observations, rewards and learned
+parameters remained finite. Every feasible estimate was checked against its
+joint-effort bounds. The 256-environment bounded case exercised 1,079 clipped
+and 35 infeasible environment steps.
+The non-finite fallback regression covers NaN and both infinities in forces and
+torques, active/inactive environments, isolation and recovery. Six additional
+cases passed with the real estimator and event on CUDA.
 
 ![Current payload response with the supplied checkpoint](x2_sliding_payload.png)
 

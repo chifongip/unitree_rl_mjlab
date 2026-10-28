@@ -10,7 +10,7 @@ import torch
 
 from mjlab.utils.lab_api.math import matrix_from_quat
 
-from .events import _resolve_constant_forces
+from .events import MaxForceEstimator, _resolve_constant_forces
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -19,10 +19,38 @@ _BOX_HALF_HEIGHT_M = 0.06
 _CONTENTS_RADIUS_M = 0.025
 
 
+def default_torque_bounds(joint_names: tuple[str, ...]) -> dict:
+  """Settings for limiting the applied bilateral wrench at each policy step."""
+  return {
+    "enabled": True, "joint_names": joint_names,
+    "effort_limit_scale": 0.9,
+  }
+
+
+def validate_torque_bounds(settings: dict | None) -> dict | None:
+  """Validate serialized settings before changing any restored configuration."""
+  if settings is None:
+    return None
+  if set(settings) != set(default_torque_bounds(())):
+    raise ValueError("Payload torque_bounds must contain exactly the required fields")
+  result = dict(settings)
+  names = tuple(result["joint_names"])
+  if (not names or not all(isinstance(name, str) and name for name in names)
+      or len(set(names)) != len(names)):
+    raise ValueError("Payload torque_bounds joint_names must be distinct nonempty names")
+  result["joint_names"] = names
+  if not isinstance(result["enabled"], bool):
+    raise ValueError("Payload torque_bounds enabled must be a bool")
+  scale = result["effort_limit_scale"]
+  if not math.isfinite(scale) or not 0 < scale <= 1:
+    raise ValueError("Payload torque_bounds effort_limit_scale must lie in (0, 1]")
+  return result
+
+
 def default_payload_params() -> dict:
   """Return serializable settings for the tilting box and sliding contents."""
   return {
-    "mass_range_kg": (2.0, 6.0),
+    "mass_range_kg": (0.0, 6.0),
     "contents_fraction": 0.75,
     "travel_xy_m": (0.10, 0.08),
     "com_height_m": -0.05,
@@ -43,8 +71,13 @@ def validate_payload_params(params: dict) -> dict:
   result = dict(params)
   for name in ("mass_range_kg", "travel_xy_m"):
     values = tuple(params[name])
-    if len(values) != 2 or not all(math.isfinite(v) and v > 0 for v in values):
-      raise ValueError(f"Payload {name} must contain two finite positive values")
+    if len(values) != 2 or not all(math.isfinite(v) for v in values):
+      raise ValueError(f"Payload {name} must contain two finite values")
+    if name == "mass_range_kg":
+      if not all(0 <= v <= 6 for v in values):
+        raise ValueError("Payload mass_range_kg must lie in [0, 6] kg")
+    elif not all(v > 0 for v in values):
+      raise ValueError(f"Payload {name} must contain positive values")
     result[name] = values
   if result["mass_range_kg"][0] > result["mass_range_kg"][1]:
     raise ValueError("Payload mass_range_kg must be ordered")
@@ -182,6 +215,16 @@ class SlidingBoxForceEvent:
     if len(self._body_ids) != 2 or self._body_ids[0] == self._body_ids[1]:
       raise ValueError("Sliding payload requires two distinct ordered hand bodies")
     self._params = validate_payload_params(cfg.params["payload"])
+    torque_bounds = validate_torque_bounds(cfg.params.get("torque_bounds"))
+    self._torque_estimator = None
+    if torque_bounds is not None and torque_bounds["enabled"]:
+      self._torque_estimator = MaxForceEstimator(
+        env, self._asset, tuple(self._body_names),
+        constraint_joint_names_by_body={
+          name: torque_bounds["joint_names"] for name in self._body_names
+        },
+        effort_limit_scale=torque_bounds["effort_limit_scale"],
+      )
     self._event_params = cfg.params
     self._num_envs = env.num_envs
     self._device = env.device
@@ -209,6 +252,9 @@ class SlidingBoxForceEvent:
     tau = self._params["acceleration_filter_s"]
     self._filter_alpha = -math.expm1(-self._dt / tau) if tau else 1.0
     self._mass = torch.zeros(env.num_envs, device=env.device)
+    self._wrench_scale = torch.ones_like(self._mass)
+    self._wrench_feasible = torch.ones_like(self._initialized)
+    self._requested_wrench = torch.zeros(env.num_envs, 2, 6, device=env.device)
     self._episode_draw = torch.zeros_like(self._mass)
     self._no_force_mask = torch.zeros_like(self._initialized)
     self.reset()
@@ -228,8 +274,14 @@ class SlidingBoxForceEvent:
     count = self._mass[env_ids].numel()
     lo, hi = self._params["mass_range_kg"]
     self._mass[env_ids] = lo + (hi - lo) * torch.rand(count, device=self._device)
+    self._wrench_scale[env_ids] = 1
+    self._wrench_feasible[env_ids] = True
+    self._requested_wrench[env_ids] = 0
     self._episode_draw[env_ids] = torch.rand(count, device=self._device)
-    self._no_force_mask[env_ids] = default_pose[env_ids] | (self._episode_draw[env_ids] < carry_ratio)
+    self._no_force_mask[env_ids] = (
+      default_pose[env_ids] | (self._episode_draw[env_ids] < carry_ratio)
+      | (self._mass[env_ids] == 0)
+    )
     self._position[env_ids] = (2 * torch.rand(count, 2, device=self._device) - 1) * self._params[
       "initial_offset_m"
     ]
@@ -252,6 +304,42 @@ class SlidingBoxForceEvent:
     action = action_manager.get_term(action_name)
     return action.default_pose_sampling_ratio, action.default_pose_mask
 
+  def _limit_wrench(
+    self, forces: torch.Tensor, torques: torch.Tensor, active: torch.Tensor,
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Limit only applied forces/torques; preserve the sampled mass and dynamics."""
+    assert self._torque_estimator is not None
+    estimate = self._torque_estimator.estimate_wrench_scale(self._env, forces, torques)
+    finite_request = torch.isfinite(forces).all(dim=(1, 2)) & torch.isfinite(torques).all(dim=(1, 2))
+    self._wrench_feasible[:] = estimate.feasible & finite_request
+    self._wrench_scale[:] = torch.where(self._wrench_feasible, estimate.scale, 0.)
+    scale = self._wrench_scale[:, None, None]
+    feasible = self._wrench_feasible[:, None, None]
+    # Multiplying NaN/Inf by zero is not a zero-wrench fallback.
+    applied_forces = torch.where(feasible, forces * scale, 0.)
+    applied_torques = torch.where(feasible, torques * scale, 0.)
+    count = active.sum().clamp_min(1)
+    log = self._env.extras["log"]
+    for name, values in {
+      "payload_mass_kg": self._mass,
+      "payload_wrench_scale": self._wrench_scale,
+      "payload_wrench_infeasible": (~self._wrench_feasible).float(),
+      "payload_nonfinite_request": (~finite_request).float(),
+      # Undefined request norms log zero; the nonfinite metric identifies them.
+      "payload_requested_force_N": torch.nan_to_num(
+        forces.flatten(1).norm(dim=1), nan=0., posinf=0., neginf=0.,
+      ),
+      "payload_applied_force_N": applied_forces.flatten(1).norm(dim=1),
+      "payload_requested_torque_Nm": torch.nan_to_num(
+        torques.flatten(1).norm(dim=1), nan=0., posinf=0., neginf=0.,
+      ),
+      "payload_applied_torque_Nm": applied_torques.flatten(1).norm(dim=1),
+    }.items():
+      log[f"Metrics/{name}"] = (values * active).sum() / count
+    loaded = applied_forces.ne(0).any(dim=(1, 2)) | applied_torques.ne(0).any(dim=(1, 2))
+    log["Metrics/payload_loaded_fraction"] = loaded.float().mean()
+    return applied_forces, applied_torques
+
   def __call__(
     self,
     env,
@@ -263,8 +351,9 @@ class SlidingBoxForceEvent:
     constant_force: dict | None = None,
     body_frame: bool = False,
     upper_body_action_name: str | None = None,
+    torque_bounds: dict | None = None,
   ) -> None:
-    del env, env_ids, asset_cfg, payload
+    del env, env_ids, asset_cfg, payload, torque_bounds
     if not math.isfinite(force_scale) or not 0 <= no_force_ratio <= 1:
       raise ValueError("Payload requires finite force_scale and no_force_ratio in [0, 1]")
     default_ratio, default_pose = self._get_default_pose_sampling(upper_body_action_name)
@@ -283,18 +372,22 @@ class SlidingBoxForceEvent:
         forces, torch.zeros_like(forces), body_ids=self._body_ids
       )
       self._no_force_mask[:] = ~forces.ne(0).any(dim=(1, 2))
+      self._requested_wrench[..., :3] = forces
+      self._requested_wrench[..., 3:] = 0
+      self._wrench_scale[:] = 1
+      self._wrench_feasible[:] = True
       self._initialized[:] = False
       self._velocity.zero_()
       return
 
+    carry_ratio = _carry_no_force_ratio(default_ratio, no_force_ratio)
     hands = self._asset.data.body_com_pos_w[:, self._body_ids]
     hand_quats = self._asset.data.body_link_quat_w[:, self._body_ids]
     rotation, separation, valid = box_rotation(hands, hand_quats)
     valid &= separation >= self._params["min_hand_separation_m"]
     # The reduced floor-contact model requires an upright, nondegenerate grasp.
     valid &= rotation[:, 2, 2] > 0.1
-    carry_ratio = _carry_no_force_ratio(default_ratio, no_force_ratio)
-    self._no_force_mask[:] = default_pose | (self._episode_draw < carry_ratio) | ~valid
+    self._no_force_mask[:] = default_pose | (self._episode_draw < carry_ratio) | ~valid | (self._mass == 0)
     active = ~self._no_force_mask & (force_scale > 0)
     continuing = (self._initialized & active).unsqueeze(-1)
     hand_velocity = self._asset.data.body_com_lin_vel_w[:, self._body_ids].mean(dim=1)
@@ -361,6 +454,11 @@ class SlidingBoxForceEvent:
     )
     moment -= torch.einsum("bij,bj->bi", rotation, shell_spin)
     forces, torques = distribute_hand_wrench(hands, shell_force + contents_force, moment)
+    self._requested_wrench[..., :3] = forces
+    self._requested_wrench[..., 3:] = torques
+    if self._torque_estimator is not None:
+      forces, torques = self._limit_wrench(forces, torques, active)
+      self._no_force_mask |= ~(forces.ne(0).any(dim=(1, 2)) | torques.ne(0).any(dim=(1, 2)))
     self._asset.write_external_wrench_to_sim(forces, torques, body_ids=self._body_ids)
 
     self._position[:] = torch.where(active.unsqueeze(-1), position, self._position)
@@ -426,6 +524,11 @@ def restore_payload_params(cfg, overrides: dict, *, training: bool = False) -> N
   """Restore payload settings without changing task activation or play overrides."""
   saved = overrides.get("events", {}).get("hand_force", {}).get("params", {})
   if "payload" not in saved:
+    # Legacy playback must not silently acquire a new wrench limiter. A
+    # training transfer deliberately keeps the new task's bounded settings.
+    event = cfg.events.get("hand_force")
+    if not training and event is not None and event.func is SlidingBoxForceEvent:
+      event.params["torque_bounds"] = None
     return
   event = cfg.events.get("hand_force")
   if event is None or event.func is not SlidingBoxForceEvent:
@@ -433,6 +536,10 @@ def restore_payload_params(cfg, overrides: dict, *, training: bool = False) -> N
   payload = dict(saved["payload"])
   payload.pop("model_version", None)
   payload = validate_payload_params(payload)
+  torque_bounds = validate_torque_bounds(
+    saved.get("torque_bounds") if not training or "torque_bounds" in saved
+    else event.params.get("torque_bounds"),
+  )
   ratio = event.params.get("no_force_ratio", 0.0)
   if training and "no_force_ratio" in saved:
     ratio = saved["no_force_ratio"]
@@ -447,6 +554,7 @@ def restore_payload_params(cfg, overrides: dict, *, training: bool = False) -> N
     )
     _carry_no_force_ratio(default_ratio, ratio)
   event.params["payload"] = payload
+  event.params["torque_bounds"] = torque_bounds
   if training:
     event.params["no_force_ratio"] = ratio
 
