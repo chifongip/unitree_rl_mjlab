@@ -357,6 +357,7 @@ def _load_params_overrides(params_dir: Path) -> dict | None:
       data = yaml.safe_load(clean_path.read_text())
       if isinstance(data, dict):
         _supplement_obs_terms(data, params_dir)
+        _supplement_torque_compensation(data, params_dir)
         return data
       return None
     except Exception as e:
@@ -416,13 +417,96 @@ def _supplement_obs_terms(data: dict, params_dir: Path) -> None:
       obs_data[group_name]["terms"] = group_data["terms"]
 
 
-def _apply_env_overrides(env_cfg, overrides: dict) -> None:
+def _supplement_torque_compensation(data: dict, params_dir: Path) -> None:
+  """Recover vectors/actuators omitted by the older overrides serializer."""
+  from dataclasses import fields
+
+  from src.instinct_mj.controllers import JointObserverCfg
+
+  observer = data.get("actions", {}).get("upper_body_motion", {}).get("observer")
+  if not isinstance(observer, dict):
+    return
+  actuators = data.get("scene", {}).get("entities", {}).get("robot", {}).get(
+    "articulation", {}
+  ).get("actuators")
+  if {f.name for f in fields(JointObserverCfg)} <= observer.keys() and isinstance(actuators, list):
+    return
+  full_path = params_dir / "env.yaml"
+  if not full_path.exists():
+    return  # Restore will reject incomplete settings with an explicit error.
+  try:
+    full = yaml.safe_load(_PYTHON_TAG_RE.sub("", full_path.read_text()))
+  except (OSError, yaml.YAMLError) as error:
+    # Keep the known observer metadata so restore rejects its missing fields;
+    # falling through the outer loader would lose it and select PD-only play.
+    print(f"[WARN] Could not supplement torque compensation from {full_path}: {error}")
+    return
+  if not isinstance(full, dict):
+    return
+  complete = full.get("actions", {}).get("upper_body_motion", {}).get("observer")
+  if isinstance(complete, dict):
+    data["actions"]["upper_body_motion"]["observer"] = {**complete, **observer}
+  saved_actuators = full.get("scene", {}).get("entities", {}).get("robot", {}).get(
+    "articulation", {}
+  ).get("actuators")
+  if not isinstance(actuators, list) and isinstance(saved_actuators, list):
+    scene = data.setdefault("scene", {}).setdefault("entities", {}).setdefault("robot", {})
+    scene.setdefault("articulation", {})["actuators"] = saved_actuators
+
+
+def _restore_torque_compensation(env_cfg, overrides: dict | None) -> str | None:
+  """Restore checkpoint control, treating absent observer metadata as legacy PD."""
+  action = env_cfg.actions.get("upper_body_motion")
+  if not getattr(action, "restore_observer_from_checkpoint", True):
+    return "using environment config (checkpoint controller restore disabled)"
+  upper_body = (overrides or {}).get("actions", {}).get("upper_body_motion", {})
+  saved_observer = upper_body.get("observer")
+  if saved_observer is None:
+    if action is not None and getattr(action, "observer", None) is not None:
+      action.observer = None
+      reason = (
+        "saved training config" if "observer" in upper_body
+        else "legacy checkpoint without observer metadata"
+      )
+      return f"disabled ({reason})"
+    return None
+  if not isinstance(saved_observer, dict):
+    raise ValueError("Saved torque compensation must be an observer dictionary or null")
+  saved_actuators = overrides.get("scene", {}).get("entities", {}).get("robot", {}).get(
+    "articulation", {}
+  ).get("actuators")
+  if not isinstance(saved_actuators, list):
+    raise ValueError("Saved torque compensation requires complete arm actuator settings")
+  from src.tasks.locomanipulation.config.x2.torque_compensation import (
+    restore_x2_torque_compensation,
+  )
+
+  restore_x2_torque_compensation(env_cfg, saved_observer, saved_actuators)
+  return (
+    f"restored {saved_observer['algorithm']} / {saved_observer['mode']} "
+    "and arm actuator settings"
+  )
+
+
+def _apply_env_overrides(env_cfg, overrides: dict | None) -> None:
   """Apply scalar/dict overrides from saved training params to env_cfg.
 
   Only overrides fields that actually differ from the current config.
   Prints each differing field as: field: current_value -> saved_value.
   """
   diffs: list[str] = []
+  controller = _restore_torque_compensation(env_cfg, overrides)
+  if controller is not None:
+    diffs.append(f"  actions.upper_body_motion.observer: {controller}")
+  if overrides is None:
+    if diffs:
+      print("[INFO]: Checkpoint controller config:")
+      print("\n".join(diffs))
+    return
+
+  from src.tasks.locomanipulation.mdp.payload import restore_payload_params
+
+  restore_payload_params(env_cfg, overrides)
 
   def _check_and_set(path: str, current, saved) -> bool:
     """Return True and append to diffs if values differ."""
@@ -545,6 +629,8 @@ class PlayConfig:
   """Override terrain type. Useful for evaluating a flat-trained checkpoint on rough terrain."""
   box_mass: float | None = None
   """X2 locomanipulation payload mass in kg; enables a rigid two-hand carry grasp."""
+  sliding_payload: bool = False
+  """Enable the reduced sliding payload in the carry task (no physical box)."""
   box_depth: float = 0.3
   """Payload front-to-back dimension in meters."""
   box_height: float = 0.25
@@ -661,9 +747,16 @@ def run_play(task_id: str, cfg: PlayConfig):
     else:
       params_path = log_dir / "params"
     overrides = _load_params_overrides(params_path)
+    _apply_env_overrides(env_cfg, overrides)
     if overrides is not None:
-      _apply_env_overrides(env_cfg, overrides)
       print(f"[INFO]: Restored env config from {params_path}")
+
+  if cfg.sliding_payload:
+    from src.tasks.locomanipulation.mdp.payload import enable_payload_playback
+
+    if cfg.box_mass is not None:
+      raise ValueError("--sliding-payload cannot be combined with --box-mass")
+    enable_payload_playback(env_cfg)
 
   if cfg.carry_pose_file is not None and cfg.box_mass is None:
     raise ValueError("--carry-pose-file requires --box-mass")
@@ -770,7 +863,7 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     # Upper body pose switching via F8-F11 keys.
     act_mgr = env.unwrapped.action_manager
-    if "upper_body_motion" in getattr(act_mgr, "_terms", {}) and cfg.box_mass is None:
+    if "upper_body_motion" in getattr(act_mgr, "_terms", {}) and cfg.box_mass is None and not cfg.sliding_payload:
         poses = PREDEFINED_POSES_X2 if "x2" in task_id.lower() else PREDEFINED_POSES
         _patch_upper_body_pose(act_mgr._terms["upper_body_motion"], override, poses)
         pose_keys = ", ".join(f"F{i+8}=pose{i}" for i in range(len(poses)))

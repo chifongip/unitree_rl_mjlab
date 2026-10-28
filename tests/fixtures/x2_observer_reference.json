@@ -1,0 +1,13 @@
+{
+  "source_repository": "RoboJuDo-Plus",
+  "description": "Independent NumPy synchronous runtime, 72 control intervals, two worlds, ACTIVE/SHADOW, both algorithms; synthetic feedback with unloading and saturation.",
+  "dt": 0.02,
+  "seed": 20261027,
+  "sources_sha256": {
+    "robojudo/utils/observers/model.py": "c428caea5d8432badf474db52c3efb3b6b4ce281b0a9cd8d114ef4ba452f1df4",
+    "robojudo/utils/observers/linearized.py": "2f27bdc93d4673b5b8c4c1ea716c13e3ddc094fb95ac884f6cbf4b55e510a11e",
+    "robojudo/utils/observers/nonlinear.py": "b0e3ae663c9b98986fcb6e68016f850141e6c85f4d03adf14a8f9a0f0ae4a1e3",
+    "robojudo/utils/observers/runtime.py": "07c125bec52331bace7f59b072561c412f006149dcb39d39e37cf30536a7576d",
+    "robojudo/config/x2/observer_parameters.py": "c3825eefd324c1ff24d1a07bbbea75a89401c3bc2c1ba89d94d632f822e76da0"
+  }
+}

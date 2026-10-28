@@ -17,8 +17,12 @@ from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
 from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
+from src.tasks.locomanipulation.mdp.payload import (
+  SlidingBoxForceEvent, default_payload_params, default_torque_bounds,
+)
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
 from src.tasks.locomanipulation.locomanipulation_env_cfg import make_locomanipulation_env_cfg
+from .torque_compensation import X2_OBSERVER_JOINT_NAMES, configure_x2_torque_compensation
 
 
 # 29-DOF motion data column indices for the 14 upper-body DOFs.
@@ -167,6 +171,15 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     waist_yaw_only=True,
     exclude_waist=True,
     pose_only=True,
+    restore_observer_from_checkpoint=True,
+  )
+  # Flat and carry fine-tuning inherit the same deployment arm controller.
+  configure_x2_torque_compensation(
+    cfg,
+    algorithm="nonlinear",
+    mode="ACTIVE",
+    correction_limit_fraction=0.8,
+    correction_limit_nm=0.0,  # No absolute Nm cap; use the actuator-limit fraction.
   )
 
   ## Commands ##
@@ -346,7 +359,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
     Path(__file__).resolve().parents[5] / "scripts" / "postures_x2_recorded.py"
   )
   _spec = _ilu.spec_from_file_location("postures_x2_recorded", _postures_path)
-  _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+  _mod = _ilu.module_from_spec(_spec)
+  _spec.loader.exec_module(_mod)
   # The resampling pipeline already clamps the exported values to the MJCF
   # joint limits.  Only select the joints used by height-posture rewards here.
   height_postures = {
@@ -525,11 +539,30 @@ def agibot_x2_locomanipulation_carry_finetune_flat_env_cfg(
   upper_body_motion.locomotion_motion_file = None
   upper_body_motion.pose_only = True
 
-  # Carry fine-tuning must expose a carry pose on every reset.  The base
-  # curriculum replaces a fraction of episodes with the arms-down default pose,
-  # so remove it rather than allowing non-carry episodes.
-  upper_body_motion.default_pose_ratio = 0.0
+  # Rehearse unloaded default-posture locomotion throughout fine-tuning. Keep this
+  # fraction fixed instead of restarting the base posture curriculum.
+  upper_body_motion.default_pose_ratio = 0.0 if play else 0.15
   cfg.curriculum.pop("default_pose_ratio", None)
+
+  # Only carry episodes assume both hands support one shared box. Basic tasks
+  # retain their independent forces and wider manipulation-pose distribution.
+  hands = ("left_wrist_roll_link", "right_wrist_roll_link")
+  cfg.events["hand_force"] = EventTermCfg(
+    func=SlidingBoxForceEvent, mode="step",
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_names=hands, preserve_order=True),
+      "upper_body_action_name": "upper_body_motion",
+      "payload": default_payload_params(),
+      "torque_bounds": default_torque_bounds(X2_OBSERVER_JOINT_NAMES),
+      "force_scale": 1.0 if play else 0.0,
+      # Total unloaded fraction: 15% default poses plus 15% carry poses.
+      "no_force_ratio": 0.0 if play else 0.3,
+      "constant_force": {"x": 0.0, "y": 0.0, "z": 0.0} if play else None,
+    },
+  )
+  cfg.observations["critic"].terms["wrist_force"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", body_names=hands, preserve_order=True,
+  )
 
   # The carry runner sets start_step to the loaded checkpoint's step counter.
   # This gives the new posture distribution its own load ramp on fine-tuning.

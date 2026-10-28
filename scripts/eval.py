@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import csv
 import json
-import re
 import time
 from dataclasses import asdict, dataclass
 from itertools import product
@@ -95,6 +94,22 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_roll_joint": 0.0,
     },
+    "x2_carry": {
+        "left_shoulder_pitch_joint": -0.081,
+        "left_shoulder_roll_joint": 0.026,
+        "left_shoulder_yaw_joint": -0.049,
+        "left_elbow_joint": -2.188,
+        "left_wrist_yaw_joint": 0.238,
+        "left_wrist_pitch_joint": 0.326,
+        "left_wrist_roll_joint": 0.215,
+        "right_shoulder_pitch_joint": -0.081,
+        "right_shoulder_roll_joint": -0.026,
+        "right_shoulder_yaw_joint": 0.049,
+        "right_elbow_joint": -2.188,
+        "right_wrist_yaw_joint": -0.238,
+        "right_wrist_pitch_joint": 0.326,
+        "right_wrist_roll_joint": -0.215,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -102,6 +117,7 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
 # ---------------------------------------------------------------------------
 
 _FORCE_PRESETS: dict[str, dict[str, float] | dict[str, dict[str, float]] | None] = {
+    "payload": None,  # Explicit carry-only reduced dynamics, selected below.
     "none": None,
     "medium": {"x": 0.0, "y": 0.0, "z": -15.0},
     "large": {"x": 0.0, "y": 0.0, "z": -30.0},
@@ -110,67 +126,17 @@ _FORCE_PRESETS: dict[str, dict[str, float] | dict[str, dict[str, float]] | None]
 
 
 # ---------------------------------------------------------------------------
-# Param override helpers (duplicated from play.py).
+# Param override helpers.
 # ---------------------------------------------------------------------------
 
-_PYTHON_TAG_RE = re.compile(r"!!python/\S+")
-
-
 def _load_params_overrides(params_dir: Path) -> dict | None:
-    """Load safe scalar/dict overrides from training params directory."""
-    clean_path = params_dir / "env_overrides.yaml"
-    if clean_path.exists():
-        try:
-            data = yaml.safe_load(clean_path.read_text())
-            if isinstance(data, dict):
-                _supplement_obs_terms(data, params_dir)
-                return data
-            return None
-        except Exception as e:
-            print(f"[WARN] Could not load {clean_path}: {e}")
+    """Use playback's loader, including legacy controller supplementation."""
+    if __package__:
+        from .play import _load_params_overrides as load
+    else:
+        from play import _load_params_overrides as load
 
-    full_path = params_dir / "env.yaml"
-    if not full_path.exists():
-        return None
-    try:
-        text = full_path.read_text()
-        cleaned = _PYTHON_TAG_RE.sub("", text)
-        data = yaml.safe_load(cleaned)
-        return data if isinstance(data, dict) else None
-    except Exception as e:
-        print(f"[WARN] Could not load params from {full_path}: {e}")
-        return None
-
-
-def _supplement_obs_terms(data: dict, params_dir: Path) -> None:
-    """Fill missing observation term params from env.yaml."""
-    obs_data = data.get("observations")
-    if not isinstance(obs_data, dict):
-        return
-    for group_data in obs_data.values():
-        if isinstance(group_data, dict) and "terms" in group_data:
-            return
-
-    full_path = params_dir / "env.yaml"
-    if not full_path.exists():
-        return
-    try:
-        text = full_path.read_text()
-        cleaned = _PYTHON_TAG_RE.sub("", text)
-        full_data = yaml.safe_load(cleaned)
-    except Exception:
-        return
-
-    if not isinstance(full_data, dict):
-        return
-    full_obs = full_data.get("observations")
-    if not isinstance(full_obs, dict):
-        return
-    for group_name, group_data in full_obs.items():
-        if not isinstance(group_data, dict):
-            continue
-        if "terms" in group_data and group_name in obs_data:
-            obs_data[group_name]["terms"] = group_data["terms"]
+    return load(params_dir)
 
 
 def _extract_fixed_height_from_params(params_dir: Path) -> float | None:
@@ -193,8 +159,20 @@ def _extract_fixed_height_from_params(params_dir: Path) -> float | None:
     return None
 
 
-def _apply_env_overrides(env_cfg, overrides: dict) -> None:
+def _apply_env_overrides(env_cfg, overrides: dict | None) -> None:
     """Apply scalar/dict overrides from saved training params."""
+    if __package__:
+        from .play import _restore_torque_compensation
+    else:
+        from play import _restore_torque_compensation
+    from src.tasks.locomanipulation.mdp.payload import restore_payload_params
+
+    controller = _restore_torque_compensation(env_cfg, overrides)
+    if controller is not None:
+        print(f"[INFO] Evaluation torque compensation: {controller}")
+    if overrides is None:
+        return
+    restore_payload_params(env_cfg, overrides)
     applied_params: set[tuple[int, str]] = set()
 
     for key in ("decimation", "is_finite_horizon", "scale_rewards_by_dt", "seed"):
@@ -351,7 +329,8 @@ def _configure_env_base(
     force_params = env_cfg.events["hand_force"].params
     force_params["constant_force"] = None
     force_params["no_force_ratio"] = 1.0
-    force_params["force_range_max"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)}
+    if "force_range_max" in force_params:
+        force_params["force_range_max"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)}
 
     # Disable mid-episode command resampling (velocity is set via reset only).
     long_time = float(episode_steps + 100)
@@ -365,7 +344,13 @@ def _configure_force_and_pose(
     # Force: modify event params.
     force_cfg = env.unwrapped.event_manager.get_term_cfg("hand_force")
     force_dict = _FORCE_PRESETS[force_name]
-    if force_dict is not None:
+    if force_name == "payload":
+        from src.tasks.locomanipulation.mdp.payload import SlidingBoxForceEvent
+
+        if not isinstance(force_cfg.func, SlidingBoxForceEvent):
+            raise ValueError("The payload force condition requires the carry task")
+        force_cfg.params.update(constant_force=None, no_force_ratio=0.0, force_scale=1.0)
+    elif force_dict is not None:
         force_cfg.params["constant_force"] = force_dict
         force_cfg.params["no_force_ratio"] = 0.0
     else:
@@ -538,8 +523,7 @@ def _build_env(
     if is_trained and ckpt.log_dir is not None:
         params_path = Path(cfg.params_dir) if cfg.params_dir else ckpt.log_dir / "params"
         overrides = _load_params_overrides(params_path)
-        if overrides is not None:
-            _apply_env_overrides(env_cfg, overrides)
+        _apply_env_overrides(env_cfg, overrides)
 
     _configure_env_base(env_cfg, num_envs_override or cfg.num_envs, ckpt.fixed_height, cfg.episode_steps, task_id=ckpt.task_id)
 

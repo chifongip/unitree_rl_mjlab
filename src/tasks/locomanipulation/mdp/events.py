@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 import warnings
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import mujoco
 import mujoco_warp as mjwarp
 import torch
 import warp as wp
@@ -19,6 +21,47 @@ if TYPE_CHECKING:
   from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 _AXES = ("x", "y", "z")
+
+
+@dataclass
+class WrenchScaleEstimate:
+  """One scale for all hand forces/torques, with joint-effort diagnostics."""
+
+  scale: torch.Tensor
+  feasible: torch.Tensor
+  requested_effort: torch.Tensor
+  applied_effort: torch.Tensor
+  lower: torch.Tensor
+  upper: torch.Tensor
+
+
+def maximum_wrench_scale(
+  baseline: torch.Tensor, requested: torch.Tensor,
+  lower: torch.Tensor, upper: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Largest alpha in [0, 1] with lower <= baseline - alpha*requested <= upper.
+
+  All inputs are (env, joint) tensors. An empty interval returns zero and a
+  false feasibility flag; zero cannot fix a baseline that is already overloaded.
+  Nonzero alpha may be feasible even when the zero-load baseline is not.
+  """
+  if (baseline.ndim != 2 or requested.shape != baseline.shape
+      or lower.shape != baseline.shape or upper.shape != baseline.shape):
+    raise ValueError("Wrench scale inputs must have matching (env, joint) shapes")
+  active = requested != 0
+  denominator = torch.where(active, -requested, 1.0)
+  a = (lower - baseline) / denominator
+  b = (upper - baseline) / denominator
+  lo = torch.where(active, torch.minimum(a, b), -torch.inf).amax(1).clamp_min(0.)
+  hi = torch.where(active, torch.maximum(a, b), torch.inf).amin(1).clamp_max(1.)
+  valid = (
+    torch.isfinite(baseline).all(1) & torch.isfinite(requested).all(1)
+    & torch.isfinite(lower).all(1) & torch.isfinite(upper).all(1)
+    & (lower <= upper).all(1)
+    & (active | ((baseline >= lower) & (baseline <= upper))).all(1)
+    & (lo <= hi)
+  )
+  return torch.where(valid, hi.clamp(0., 1.), 0.), valid
 
 
 def _enabled_force_axes(
@@ -177,11 +220,14 @@ def _resolve_constant_forces(
 
 
 class MaxForceEstimator:
-  """Estimate torque-feasible end-effector force intervals.
+  """Estimate instantaneous effort bounds for replacing each hand's wrench.
 
-  Each end effector is constrained by its own arm joints. Bounds reserve the
-  actuator effort already used by the current controller and evaluate the
-  Jacobian at the actual force-application point.
+  Each hand is constrained by its own arm joints. At fixed state/acceleration,
+  the replacement requires tau_new = tau_current + Q_old - J_point.T @ F_new.
+  Account for the old COM wrench before allocating the actuator reserve. These
+  are local dynamic estimates, not static holding capacities or tracking
+  guarantees. estimate() bounds individual force axes; estimate_wrench_scale()
+  bounds the complete bilateral force/torque request with one shared scale.
   """
 
   def __init__(
@@ -201,7 +247,7 @@ class MaxForceEstimator:
       raise ValueError(
         f"effort_limit_scale must be in (0, 1], got {effort_limit_scale}"
       )
-    if jacobian_zero_tolerance <= 0.0:
+    if not math.isfinite(jacobian_zero_tolerance) or jacobian_zero_tolerance <= 0.0:
       raise ValueError(
         "jacobian_zero_tolerance must be positive, got "
         f"{jacobian_zero_tolerance}"
@@ -295,6 +341,7 @@ class MaxForceEstimator:
     nv = env.sim.mj_model.nv
     with wp.ScopedDevice(env.sim.wp_device):
       self._jacp_wp = wp.zeros((nworld, 3, nv), dtype=float)
+      self._jacr_wp = wp.zeros((nworld, 3, nv), dtype=float)
       self._point_wp = wp.zeros(nworld, dtype=wp.vec3)
       self._body_wp = wp.zeros(nworld, dtype=wp.int32)
 
@@ -302,8 +349,13 @@ class MaxForceEstimator:
     self,
     env: ManagerBasedRlEnv,
     application_offsets_b: torch.Tensor | None = None,
+    previous_wrench: torch.Tensor | None = None,
   ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Compute per-EE world-frame force intervals.
+    """Compute per-EE world-frame force intervals at the current state.
+
+    previous_wrench is the world-frame COM wrench (force, torque) applied during
+    the preceding physics step, shaped (nworld, num_ee, 6). Supply it explicitly
+    if the event clears or overwrites the applied wrench before estimating.
 
     Returns:
       (force_mins, force_maxes) — lists of (nworld, 3) tensors, one per EE.
@@ -319,6 +371,11 @@ class MaxForceEstimator:
         "application_offsets_b must have shape "
         f"{expected_shape}, got {tuple(application_offsets_b.shape)}"
       )
+    if previous_wrench is None:
+      previous_wrench = self._asset.data.body_external_wrench[:, self._ee_local_body_ids]
+    expected_wrench_shape = (self._num_envs, num_ee, 6)
+    if tuple(previous_wrench.shape) != expected_wrench_shape:
+      raise ValueError(f"previous_wrench must have shape {expected_wrench_shape}")
 
     force_mins: list[torch.Tensor] = []
     force_maxes: list[torch.Tensor] = []
@@ -334,25 +391,34 @@ class MaxForceEstimator:
       self._point_wp.assign(wp.from_torch(application_point_w, dtype=wp.vec3))
       self._body_wp.fill_(global_id)
 
-      # Compute translational Jacobian.
+      # Rotation is needed to remove the old COM torque without counting the
+      # force application's offset moment twice.
       with wp.ScopedDevice(env.sim.wp_device):
         mjwarp.jac(
           env.sim.wp_model, env.sim.wp_data,
-          self._jacp_wp, None, self._point_wp, self._body_wp,
+          self._jacp_wp, self._jacr_wp, self._point_wp, self._body_wp,
         )
 
       dof_adr = self._ee_constraint_dof_adr[ee_idx]
       joint_ids = self._ee_constraint_joint_ids[ee_idx]
       effort_limit = self._ee_effort_limit[ee_idx]
       jacp = wp.to_torch(self._jacp_wp)[:, :, dof_adr]
-      baseline_effort = self._asset.data.qfrc_actuator[:, joint_ids]
+      jacr = wp.to_torch(self._jacr_wp)[:, :, dof_adr]
+      old_force = previous_wrench[:, ee_idx, :3]
+      old_torque_at_point = previous_wrench[:, ee_idx, 3:] - torch.cross(
+        offset_w, old_force, dim=-1
+      )
+      old_effort = torch.einsum("baj,ba->bj", jacp, old_force) + torch.einsum(
+        "baj,ba->bj", jacr, old_torque_at_point
+      )
+      baseline_effort = self._asset.data.qfrc_actuator[:, joint_ids] + old_effort
 
       # Solve the signed scalar-force interval for every axis and joint:
-      #   -limit <= baseline + J_axis * force_axis <= limit.
+      #   -limit <= baseline - J_axis * force_axis <= limit.
       coeff_active = jacp.abs() >= self._jacobian_zero_tolerance
       lower_num = -effort_limit - baseline_effort
       upper_num = effort_limit - baseline_effort
-      safe_coeff = torch.where(coeff_active, jacp, torch.ones_like(jacp))
+      safe_coeff = torch.where(coeff_active, -jacp, torch.ones_like(jacp))
       bound_a = lower_num.unsqueeze(1) / safe_coeff
       bound_b = upper_num.unsqueeze(1) / safe_coeff
       neg_inf = torch.full_like(jacp, -float("inf"))
@@ -376,6 +442,106 @@ class MaxForceEstimator:
       force_maxes.append(f_max)
 
     return force_mins, force_maxes
+
+  def _prepare_wrench_constraints(self, env: ManagerBasedRlEnv) -> None:
+    """Resolve the union once; shared joints must see the sum from both hands."""
+    if hasattr(self, "_wrench_joint_ids"):
+      return
+    joint_ids = torch.unique(torch.cat(self._ee_constraint_joint_ids), sorted=True)
+    global_ids = self._asset.indexing.joint_ids[joint_ids]
+    model = env.sim.mj_model
+    controls = {}
+    for actuator in self._asset.actuators:
+      targets = actuator.target_ids.tolist()
+      ids = actuator.global_ctrl_ids.tolist()
+      if len(targets) == len(ids):
+        controls.update({
+          joint: (ctrl, actuator, j)
+          for j, (joint, ctrl) in enumerate(zip(targets, ids, strict=True))
+        })
+    ctrl_ids, references = [], []
+    for local, global_id in zip(joint_ids.tolist(), global_ids.cpu().tolist()):
+      if local not in controls:
+        raise ValueError("Wrench bounds require one native actuator per joint")
+      ctrl, actuator, column = controls[local]
+      if (model.jnt_type[global_id] != mujoco.mjtJoint.mjJNT_HINGE
+          or model.actuator_trntype[ctrl] != mujoco.mjtTrn.mjTRN_JOINT
+          or model.actuator_trnid[ctrl, 0] != global_id
+          or model.actuator_gear[ctrl, 0] != 1
+          or not model.actuator_forcelimited[ctrl]):
+        raise ValueError("Wrench bounds require limited, direct unit-gear hinge actuators")
+      ctrl_ids.append(ctrl)
+      references.append((actuator, column))
+    self._wrench_joint_ids = joint_ids
+    self._wrench_dof_adr = self._asset.indexing.joint_v_adr[joint_ids]
+    self._wrench_global_joint_ids = global_ids
+    self._wrench_ctrl_ids = torch.tensor(ctrl_ids, device=self._device)
+    self._wrench_actuators = references
+    self._wrench_joint_limited = torch.tensor(
+      model.jnt_actfrclimited[global_ids.cpu().tolist()], device=self._device, dtype=torch.bool,
+    )
+
+  def _wrench_effort_bounds(self, env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
+    """Read live native, joint sum and software limits before applying reserve."""
+    native = env.sim.model.actuator_forcerange[:, self._wrench_ctrl_ids]
+    joint = env.sim.model.jnt_actfrcrange[:, self._wrench_global_joint_ids]
+    lower = torch.where(
+      self._wrench_joint_limited, torch.maximum(native[..., 0], joint[..., 0]), native[..., 0],
+    )
+    upper = torch.where(
+      self._wrench_joint_limited, torch.minimum(native[..., 1], joint[..., 1]), native[..., 1],
+    )
+    lower = lower.expand(self._num_envs, -1).clone()
+    upper = upper.expand(self._num_envs, -1).clone()
+    for j, (actuator, column) in enumerate(self._wrench_actuators):
+      limit = getattr(actuator, "force_limit", None)
+      if limit is not None:
+        lower[:, j] = torch.maximum(lower[:, j], -limit[:, column])
+        upper[:, j] = torch.minimum(upper[:, j], limit[:, column])
+    return lower * self._effort_limit_scale, upper * self._effort_limit_scale
+
+  def estimate_wrench_scale(
+    self, env: ManagerBasedRlEnv, forces: torch.Tensor, torques: torch.Tensor,
+    previous_wrench: torch.Tensor | None = None,
+  ) -> WrenchScaleEstimate:
+    """Bound a complete world-frame COM wrench, preserving all hand proportions.
+
+    forces/torques are (env, hand, 3). Q_old is the previously APPLIED wrench,
+    not the unbounded request. At fixed state/acceleration, replacing it needs
+    tau_new = tau_current + Q_old - alpha*Q_requested. No mass/pose is changed.
+    """
+    shape = (self._num_envs, len(self._ee_local_body_ids), 3)
+    if forces.shape != shape or torques.shape != shape:
+      raise ValueError(f"Wrench forces and torques must have shape {shape}")
+    if previous_wrench is None:
+      previous_wrench = self._asset.data.body_external_wrench[:, self._ee_local_body_ids]
+    if previous_wrench.shape != (*shape[:2], 6):
+      raise ValueError(f"previous_wrench must have shape {(*shape[:2], 6)}")
+    self._prepare_wrench_constraints(env)
+    old = torch.zeros(self._num_envs, len(self._wrench_joint_ids), device=self._device)
+    requested = torch.zeros_like(old)
+    for h, (local_id, global_id) in enumerate(zip(self._ee_local_body_ids, self._ee_global_body_ids)):
+      point = self._asset.data.body_com_pos_w[:, local_id].contiguous()
+      self._point_wp.assign(wp.from_torch(point, dtype=wp.vec3))
+      self._body_wp.fill_(global_id)
+      with wp.ScopedDevice(env.sim.wp_device):
+        mjwarp.jac(env.sim.wp_model, env.sim.wp_data, self._jacp_wp,
+                   self._jacr_wp, self._point_wp, self._body_wp)
+      jacp = wp.to_torch(self._jacp_wp)[:, :, self._wrench_dof_adr]
+      jacr = wp.to_torch(self._jacr_wp)[:, :, self._wrench_dof_adr]
+      old += torch.einsum("baj,ba->bj", jacp, previous_wrench[:, h, :3]) + torch.einsum(
+        "baj,ba->bj", jacr, previous_wrench[:, h, 3:],
+      )
+      requested += torch.einsum("baj,ba->bj", jacp, forces[:, h]) + torch.einsum(
+        "baj,ba->bj", jacr, torques[:, h],
+      )
+    baseline = self._asset.data.qfrc_actuator[:, self._wrench_joint_ids] + old
+    lower, upper = self._wrench_effort_bounds(env)
+    scale, feasible = maximum_wrench_scale(baseline, requested, lower, upper)
+    return WrenchScaleEstimate(
+      scale, feasible, baseline - requested, baseline - scale[:, None] * requested,
+      lower, upper,
+    )
 
 
 class HandForceEvent:
@@ -490,6 +656,12 @@ class HandForceEvent:
 
     dt = self._step_dt
 
+    # Expiry can clear a wrench and resample its application point immediately
+    # before a new impulse. Preserve the load seen by the current actuator effort.
+    previous_wrench = None
+    if max_force_estimation and self._estimator is not None:
+      previous_wrench = self._asset.data.body_external_wrench[:, self._body_ids].clone()
+
     self._time_remaining[self._active] -= dt
 
     # Clear expired impulses and resample cooldown timers.
@@ -525,7 +697,8 @@ class HandForceEvent:
     effective_scale = min(max(force_scale, 0.0), 1.0)
     if max_force_estimation and self._estimator is not None:
       ee_force_mins, ee_force_maxes = self._estimator.estimate(
-        env, application_offsets_b=self._body_point_offset_b
+        env, application_offsets_b=self._body_point_offset_b,
+        previous_wrench=previous_wrench,
       )
       _intersect_force_bounds(
         ee_force_mins, ee_force_maxes, force_range_max, effective_scale

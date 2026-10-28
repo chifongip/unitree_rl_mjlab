@@ -85,7 +85,7 @@ python scripts/check_motion_collisions.py --robot g1 --motion-file src/assets/da
 
 `HandForceEvent` simulates carrying heavy objects by applying random wrenches to end-effectors:
 
-- **Jacobian-based bounds**: `MaxForceEstimator` computes physically plausible force limits using `F_max = min(effort_limit / |J|)` per axis.
+- **Jacobian-based bounds**: `MaxForceEstimator` solves signed per-axis actuator-effort constraints at the force application point. When replacing a hand wrench, it estimates `tau_new = tau_current + Q_old - J_point.T @ F_new`, including the old force and COM torque. Dirichlet axis scaling shares the available reserve between enabled force axes. These instantaneous estimates preserve the current acceleration; they are not static payload ratings, and independently sampled new hand torques are outside the bound.
 - **Impulse lifecycle**: Forces applied for 3-5s, then cooldown. A fraction (`no_force_ratio=0.3`) of envs stay force-free.
 - **Dirichlet axis scaling**: Per-env random scaling across x/y/z axes for diversity.
 - **Curriculum**: `force_scale_staged` ramps force from 0 to max over 5k iterations.
@@ -205,9 +205,35 @@ python scripts/train.py Agibot-X2-Locomanipulation-Carry-Finetune-Flat \
     --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
-`--agent.max-iterations=2000` requests 2,000 **additional** updates after the loaded checkpoint. The carry task holds one sampled pose per episode (`pose_only=True`), uses a carry pose on every reset (`default_pose_ratio=0`), and restarts only the hand-force ramp relative to the fine-tune. Height and waist curricula retain their checkpoint progress. If a carry-fine-tune checkpoint is resumed later, its force-ramp progress is retained too. No separate `env_cfgs.py` is needed.
+`--agent.max-iterations=2000` requests 2,000 **additional** updates after the loaded checkpoint. The carry task holds one sampled pose per episode (`pose_only=True`), with this expected training mixture:
 
-The carry task currently inherits the X2 play-mode defaults: arms-down fixed pose, zero hand force, and zero velocity command. Thus `scripts/play.py` does not, by default, test velocity tracking under sampled carry poses; use the generator's file playback to inspect the pose dataset and configure a carry-specific play setup before visual policy evaluation.
+| Episode type | Fraction |
+| --- | --- |
+| Unloaded `HOME_KEYFRAME` upper-body posture | 15% |
+| Unloaded carry posture | 15% |
+| Load-eligible carry posture | 70% |
+
+`default_pose_ratio=0.15` stays fixed throughout fine-tuning. `no_force_ratio=0.3` is the total unloaded fraction, including default-posture episodes, which always receive zero hand payload forces and torques. Adjust the posture fraction with `--env.actions.upper-body-motion.default-pose-ratio`; it must not exceed `no_force_ratio`. Grasp validity and the force curriculum can further reduce loading.
+
+The carry task samples an episode mass uniformly from a configurable 0–6 kg
+range (including fixed zero or fixed six). At every policy step, the original
+`MaxForceEstimator` limits the complete requested wrench using both hands'
+forces and torques together. A common scale in [0, 1] preserves their proportions
+and keeps predicted supporting effort within 90% of the live arm effort limits.
+Mass, pose sampling and the internal payload dynamics stay unchanged.
+This instantaneous estimate preserves the current acceleration; it cannot
+guarantee future tracking or grasp stability. An empty feasible scale interval
+applies zero wrench and logs infeasibility; an existing actuator overload may
+remain. Explicit constant-force and physical-box presets bypass this limiter.
+
+Fine-tuning restarts only the hand-force ramp; height and waist curricula retain
+their checkpoint progress. Resuming a carry checkpoint retains its force-ramp
+progress, including when payload settings change.
+Playback/evaluation of saved legacy settings without torque bounds retains the
+original unbounded wrench behavior. New carry training enables bounds by
+default; `events["hand_force"].params["torque_bounds"]` contains their settings.
+
+Playback inherits the X2 defaults: arms-down fixed pose, zero hand force, and zero velocity command. Use `--sliding-payload True` to sample carry poses with the reduced payload model.
 
 ### Key CLI Overrides
 

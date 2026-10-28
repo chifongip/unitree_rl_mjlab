@@ -1,5 +1,12 @@
 # T-Pose Maximum Force Report
 
+The tables below are historical instantaneous estimates at zero actuator effort
+and zero applied hand wrench. They do not include the gravity effort required
+to hold the pose. The corrected estimator uses
+`tau_new = tau_current + Q_old - J_point.T @ F_new`; zero-baseline symmetric
+intervals are unchanged by the force-sign correction. Loaded or asymmetric
+baseline results must be recomputed with the corrected implementation.
+
 ## Scope and Method
 
 This report evaluates `MaxForceEstimator` at the third predefined upper-body
