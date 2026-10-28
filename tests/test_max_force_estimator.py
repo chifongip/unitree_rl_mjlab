@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from unittest.mock import patch
 
+import mujoco
+import numpy as np
 import pytest
 import torch
 
@@ -38,6 +40,7 @@ class _Data:
     self.body_com_quat_w = torch.zeros(num_envs, num_bodies, 4)
     self.body_com_quat_w[..., 0] = 1.0
     self.qfrc_actuator = baseline
+    self.body_external_wrench = torch.zeros(num_envs, num_bodies, 6)
 
 
 class _Entity:
@@ -124,12 +127,17 @@ def _wp_from_torch(value, dtype=None):
   return value
 
 
-def _warp_patches(jacobians, captured_points=None):
+def _warp_patches(jacobians, captured_points=None, rotational_jacobians=None):
   call_idx = 0
 
-  def jac(_model, _data, jacp, _jacr, point, _body):
+  def jac(_model, _data, jacp, jacr, point, _body):
     nonlocal call_idx
     jacp.copy_(jacobians[call_idx])
+    if jacr is not None:
+      jacr.copy_(
+        torch.zeros_like(jacp) if rotational_jacobians is None
+        else rotational_jacobians[call_idx]
+      )
     if captured_points is not None:
       captured_points.append(point.clone())
     call_idx += 1
@@ -177,10 +185,13 @@ def _build_estimator(
   return estimator, env, asset
 
 
-def _estimate(estimator, env, jacobians, offsets=None, captured_points=None):
-  patches = _warp_patches(jacobians, captured_points)
+def _estimate(
+  estimator, env, jacobians, offsets=None, captured_points=None,
+  rotational_jacobians=None, previous_wrench=None,
+):
+  patches = _warp_patches(jacobians, captured_points, rotational_jacobians)
   with patches[0], patches[2], patches[3], patches[4], patches[5]:
-    return estimator.estimate(env, offsets)
+    return estimator.estimate(env, offsets, previous_wrench)
 
 
 def test_signed_bounds_include_baseline_effort_and_reserve():
@@ -190,8 +201,8 @@ def test_signed_bounds_include_baseline_effort_and_reserve():
 
   force_mins, force_maxes = _estimate(estimator, env, [jac])
 
-  torch.testing.assert_close(force_mins[0][0, :2], torch.tensor([-6.0, -6.0]))
-  torch.testing.assert_close(force_maxes[0][0, :2], torch.tensor([3.0, 12.0]))
+  torch.testing.assert_close(force_mins[0][0, :2], torch.tensor([-3.0, -12.0]))
+  torch.testing.assert_close(force_maxes[0][0, :2], torch.tensor([6.0, 6.0]))
   assert force_mins[0][0, 2].isneginf()
   assert force_maxes[0][0, 2].isposinf()
 
@@ -207,9 +218,83 @@ def test_dirichlet_scaled_force_respects_all_joint_limits():
   alpha = torch.tensor([0.2, 0.3, 0.5])
   force = alpha * 0.8 * force_maxes[0][0]
 
-  resulting_effort = baseline[0] + force @ jac[0, :, 6:]
+  resulting_effort = baseline[0] - force @ jac[0, :, 6:]
 
   assert torch.all(resulting_effort.abs() <= torch.tensor([9.0, 18.0]) + 1e-6)
+
+
+@pytest.mark.parametrize("old_force", [0.0, -0.5, -2.0, 2.0])
+def test_downward_force_bound_matches_mujoco_supporting_torque(old_force):
+  # The negative Y hinge axis makes a downward force demand positive effort.
+  model = mujoco.MjModel.from_xml_string(
+    '<mujoco><worldbody><body><joint axis="0 -1 0"/>'
+    '<geom type="sphere" pos="1 0 0" size="0.05" '
+    'mass="0.8154943934760448"/></body></worldbody></mujoco>'
+  )
+  data = mujoco.MjData(model)
+  mujoco.mj_inverse(model, data)
+  unloaded = data.qfrc_inverse[0]
+  jp = np.zeros((3, 1))
+  mujoco.mj_jacBodyCom(model, data, jp, None, 1)
+  jac = torch.zeros(1, 3, 7)
+  jac[0, :, 6] = torch.from_numpy(jp[:, 0])
+  current_effort = unloaded - jp[2, 0] * old_force
+  estimator, env, asset = _build_estimator(
+    [jac], baseline=torch.tensor([[current_effort]], dtype=torch.float32),
+  )
+  asset.data.body_external_wrench[0, 0, 2] = old_force
+
+  mins, maxes = _estimate(estimator, env, [jac])
+
+  # Gravity needs 8 Nm, leaving 1 Nm downward capacity within the 9 Nm reserve.
+  assert mins[0][0, 2].item() == pytest.approx(-1.0)
+  assert maxes[0][0, 2].item() == pytest.approx(17.0)
+  unsafe_force = -3.0
+  assert unsafe_force < mins[0][0, 2]
+  assert unloaded - jp[2, 0] * unsafe_force == pytest.approx(11.0)
+  # Independently apply each endpoint and its compensating generalized effort.
+  for force in (mins[0][0, 2].item(), maxes[0][0, 2].item()):
+    qext = np.zeros(1)
+    mujoco.mj_applyFT(model, data, np.array([0., 0., force]), np.zeros(3),
+                      data.xipos[1], 1, qext)
+    required = unloaded - qext[0]
+    assert abs(required) <= 9.0 + 1e-6
+    data.xfrc_applied[1, 2] = force
+    data.qfrc_applied[0] = required
+    mujoco.mj_forward(model, data)
+    assert data.qacc[0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_previous_wrench_torque_is_shifted_to_the_new_application_point():
+  jac = torch.zeros(1, 3, 7)
+  jac[0, 0, 6] = 2.0
+  jacr = torch.zeros_like(jac)
+  jacr[0, 2, 6] = 1.0
+  offsets = torch.tensor([[[0.0, 1.0, 0.0]]])
+  estimator, env, asset = _build_estimator([jac], baseline=torch.tensor([[0.5]]))
+  # Q_old = 2*1 + 1*(-0.5 - (offset x force)_z) = 2.5 Nm.
+  # The actuator supplies the remaining 0.5 Nm of the 3 Nm baseline.
+  asset.data.body_external_wrench[0, 0] = torch.tensor([1., 0., 0., 0., 0., -0.5])
+
+  mins, maxes = _estimate(
+    estimator, env, [jac], offsets, rotational_jacobians=[jacr],
+  )
+
+  assert mins[0][0, 0].item() == pytest.approx(-3.0)
+  assert maxes[0][0, 0].item() == pytest.approx(6.0)
+
+
+def test_saved_previous_wrench_survives_clearing_the_applied_load():
+  jac = torch.zeros(1, 3, 7)
+  jac[0, 2, 6] = 1.0
+  estimator, env, asset = _build_estimator([jac], baseline=torch.tensor([[10.0]]))
+  old = torch.tensor([[[0., 0., -2., 0., 0., 0.]]])
+  assert torch.count_nonzero(asset.data.body_external_wrench) == 0
+
+  mins, maxes = _estimate(estimator, env, [jac], previous_wrench=old)
+
+  assert mins[0][0, 2].item() == pytest.approx(-1.0)
+  assert maxes[0][0, 2].item() == pytest.approx(17.0)
 
 
 def test_each_end_effector_uses_only_its_arm():
@@ -316,3 +401,20 @@ def test_offset_shape_is_validated():
   estimator, env, _ = _build_estimator([jac])
   with pytest.raises(ValueError, match="must have shape"):
     _estimate(estimator, env, [jac], torch.zeros(1, 3))
+
+
+def test_previous_wrench_shape_is_validated():
+  jac = torch.zeros(1, 3, 7)
+  estimator, env, _ = _build_estimator([jac])
+  with pytest.raises(ValueError, match="previous_wrench must have shape"):
+    _estimate(estimator, env, [jac], previous_wrench=torch.zeros(1, 1, 3))
+
+
+@pytest.mark.parametrize("tolerance", [0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_jacobian_tolerance_is_rejected(tolerance):
+  _, env, asset = _build_estimator([torch.zeros(1, 3, 7)])
+  with pytest.raises(ValueError, match="jacobian_zero_tolerance"):
+    MaxForceEstimator(
+      env, asset, ("hand",), constraint_joint_names=("arm",),
+      jacobian_zero_tolerance=tolerance,
+    )

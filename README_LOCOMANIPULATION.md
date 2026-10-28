@@ -85,7 +85,7 @@ python scripts/check_motion_collisions.py --robot g1 --motion-file src/assets/da
 
 `HandForceEvent` simulates carrying heavy objects by applying random wrenches to end-effectors:
 
-- **Jacobian-based bounds**: `MaxForceEstimator` computes physically plausible force limits using `F_max = min(effort_limit / |J|)` per axis.
+- **Jacobian-based bounds**: `MaxForceEstimator` solves signed per-axis actuator-effort constraints at the force application point. When replacing a hand wrench, it estimates `tau_new = tau_current + Q_old - J_point.T @ F_new`, including the old force and COM torque. Dirichlet axis scaling shares the available reserve between enabled force axes. These instantaneous estimates preserve the current acceleration; they are not static payload ratings, and independently sampled new hand torques are outside the bound.
 - **Impulse lifecycle**: Forces applied for 3-5s, then cooldown. A fraction (`no_force_ratio=0.3`) of envs stay force-free.
 - **Dirichlet axis scaling**: Per-env random scaling across x/y/z axes for diversity.
 - **Curriculum**: `force_scale_staged` ramps force from 0 to max over 5k iterations.
