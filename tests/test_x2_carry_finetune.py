@@ -97,3 +97,14 @@ def test_carry_playback_inherits_parent_play_settings():
   }
   assert cfg.events["hand_force"].params["force_scale"] == 1.0
   assert cfg.actions["upper_body_motion"].fixed_upper_body_pose is not None
+
+
+def test_carry_training_rehearses_unloaded_default_poses_without_a_posture_curriculum():
+  cfg = agibot_x2_locomanipulation_carry_finetune_flat_env_cfg()
+  action = cfg.actions["upper_body_motion"]
+  assert action.default_pose_ratio == pytest.approx(0.15)
+  assert action.pose_only
+  assert action.fixed_upper_body_pose is None
+  assert "default_pose_ratio" not in cfg.curriculum
+  assert cfg.events["hand_force"].params["upper_body_action_name"] == "upper_body_motion"
+  assert cfg.events["hand_force"].params["no_force_ratio"] == pytest.approx(0.3)

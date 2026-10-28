@@ -154,6 +154,15 @@ def rotational_acceleration(
   )
 
 
+def _carry_no_force_ratio(default_ratio: float, no_force_ratio: float) -> float:
+  """Allocate the unloaded episode budget remaining after sampled default poses."""
+  if not 0 <= default_ratio <= no_force_ratio <= 1:
+    raise ValueError("Payload requires 0 <= default_pose_ratio <= no_force_ratio <= 1")
+  if default_ratio == 1:
+    return 0.0  # All sampled episodes already use the unloaded default pose.
+  return (no_force_ratio - default_ratio) / (1 - default_ratio)
+
+
 class SlidingBoxForceEvent:
   """A hand-carried box with one sliding mass, evaluated once per policy step.
 
@@ -161,9 +170,11 @@ class SlidingBoxForceEvent:
   observations/rewards. Hand tilt drives gravity and rotating-frame inertia;
   floor loading sets static and kinetic friction.
   Vertical flight, independent box motion and grip/contact solving are omitted.
+  no_force_ratio includes sampled default-pose episodes, which are always unloaded.
   """
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self._env = env
     asset_cfg = cfg.params["asset_cfg"]
     self._asset = env.scene[asset_cfg.name]
     self._body_ids = asset_cfg.body_ids
@@ -206,13 +217,19 @@ class SlidingBoxForceEvent:
     """Reset selected payloads without reading potentially stale robot kinematics."""
     if env_ids is None:
       env_ids = slice(None)
+    default_ratio, default_pose = self._get_default_pose_sampling(
+      self._event_params.get("upper_body_action_name"),
+    )
+    carry_ratio = 0.0
+    if self._event_params.get("constant_force") is None:
+      carry_ratio = _carry_no_force_ratio(
+        default_ratio, self._event_params.get("no_force_ratio", 0.0),
+      )
     count = self._mass[env_ids].numel()
     lo, hi = self._params["mass_range_kg"]
     self._mass[env_ids] = lo + (hi - lo) * torch.rand(count, device=self._device)
     self._episode_draw[env_ids] = torch.rand(count, device=self._device)
-    self._no_force_mask[env_ids] = self._episode_draw[env_ids] < self._event_params.get(
-      "no_force_ratio", 0.0
-    )
+    self._no_force_mask[env_ids] = default_pose[env_ids] | (self._episode_draw[env_ids] < carry_ratio)
     self._position[env_ids] = (2 * torch.rand(count, 2, device=self._device) - 1) * self._params[
       "initial_offset_m"
     ]
@@ -226,6 +243,15 @@ class SlidingBoxForceEvent:
     zeros = torch.zeros(count, 2, 3, device=self._device)
     self._asset.write_external_wrench_to_sim(zeros, zeros, env_ids=env_ids, body_ids=self._body_ids)
 
+  def _get_default_pose_sampling(self, action_name: str | None) -> tuple[float, torch.Tensor]:
+    # The event manager is constructed before the action manager. Its initial
+    # reset only clears state; episode resets can read the newly selected pose.
+    action_manager = getattr(self._env, "action_manager", None)
+    if action_name is None or action_manager is None:
+      return 0.0, torch.zeros_like(self._no_force_mask)
+    action = action_manager.get_term(action_name)
+    return action.default_pose_sampling_ratio, action.default_pose_mask
+
   def __call__(
     self,
     env,
@@ -236,10 +262,12 @@ class SlidingBoxForceEvent:
     no_force_ratio: float = 0.0,
     constant_force: dict | None = None,
     body_frame: bool = False,
+    upper_body_action_name: str | None = None,
   ) -> None:
     del env, env_ids, asset_cfg, payload
     if not math.isfinite(force_scale) or not 0 <= no_force_ratio <= 1:
       raise ValueError("Payload requires finite force_scale and no_force_ratio in [0, 1]")
+    default_ratio, default_pose = self._get_default_pose_sampling(upper_body_action_name)
     if constant_force is not None:
       forces = _resolve_constant_forces(
         constant_force,
@@ -250,6 +278,7 @@ class SlidingBoxForceEvent:
         body_frame=body_frame,
         asset=self._asset,
       )
+      forces[default_pose] = 0.0
       self._asset.write_external_wrench_to_sim(
         forces, torch.zeros_like(forces), body_ids=self._body_ids
       )
@@ -264,7 +293,8 @@ class SlidingBoxForceEvent:
     valid &= separation >= self._params["min_hand_separation_m"]
     # The reduced floor-contact model requires an upright, nondegenerate grasp.
     valid &= rotation[:, 2, 2] > 0.1
-    self._no_force_mask[:] = (self._episode_draw < no_force_ratio) | ~valid
+    carry_ratio = _carry_no_force_ratio(default_ratio, no_force_ratio)
+    self._no_force_mask[:] = default_pose | (self._episode_draw < carry_ratio) | ~valid
     active = ~self._no_force_mask & (force_scale > 0)
     continuing = (self._initialized & active).unsqueeze(-1)
     hand_velocity = self._asset.data.body_com_lin_vel_w[:, self._body_ids].mean(dim=1)
@@ -408,6 +438,14 @@ def restore_payload_params(cfg, overrides: dict, *, training: bool = False) -> N
     ratio = saved["no_force_ratio"]
     if not 0 <= ratio <= 1:
       raise ValueError("Saved no_force_ratio must lie in [0, 1]")
+  if training and event.params.get("constant_force") is None:
+    action_name = event.params.get("upper_body_action_name")
+    action = cfg.actions[action_name] if action_name is not None else None
+    default_ratio = (
+      action.default_pose_ratio
+      if action is not None and action.fixed_upper_body_pose is None else 0.0
+    )
+    _carry_no_force_ratio(default_ratio, ratio)
   event.params["payload"] = payload
   if training:
     event.params["no_force_ratio"] = ratio

@@ -8,7 +8,7 @@ retain their existing force events and general manipulation data.
 The event uses batched Torch operations once per 20 ms policy step. It adds no
 MuJoCo bodies, contacts, constraints, physics substeps or Jacobian calculations.
 Observation/reward functions and dimensions, symmetry, the force curriculum,
-unloaded-episode mask and carry checkpoint progress remain unchanged.
+and carry checkpoint progress remain unchanged.
 
 ## Mechanics and settings
 
@@ -29,8 +29,8 @@ produce one total wrench. The two hand forces and residual hand torques reproduc
 that wrench. Hand load sharing is an explicit approximation, not a solved grasp.
 Inertia and visualization use the same box dimensions, including narrow grasps.
 
-Settings are plain values from `default_payload_params()`, saved in environment
-YAML and restored by train/play/eval before constructing the environment:
+Physical settings come from `default_payload_params()` and are saved in environment
+YAML and restored by train/play/eval. Episode sampling is configured separately:
 
 | Setting | Default |
 | --- | --- |
@@ -40,7 +40,9 @@ YAML and restored by train/play/eval before constructing the environment:
 | Wall restitution / damping | 0.10 / 1 per second |
 | Initial contents offset / relative velocity | Uniform +/-1 cm / zero |
 | Acceleration filter time constant | 0.10 s |
-| Unloaded training episodes | 30% |
+| Default-pose training episodes (always unloaded) | 15% |
+| Total unloaded training episodes (`no_force_ratio`) | 30% |
+| Unloaded carry-pose training episodes | 15% |
 
 The shell center is 5 cm below the hand midpoint along box up. The box is 12 cm
 high, 25 cm deep by default, and wide enough for the hand span and contents
@@ -48,8 +50,25 @@ travel. The contents marker has a 2.5 cm radius and rests on the bottom, 3.5 cm
 below the shell center. Geometry and friction are exploratory assumptions.
 
 `force_scale` scales both mass components. Zero scale and unloaded episodes emit
-zero wrenches. Existing constant-force presets bypass payload dynamics. The
-physical-box playback option disables the reduced load to prevent double loading.
+zero wrenches. Fine-tuning holds the robot's `HOME_KEYFRAME` upper-body pose for
+15% of episodes to rehearse ordinary unloaded locomotion. This differs from the
+zero-joint arm pose used by default playback. The fraction stays fixed throughout
+fine-tuning; `actions.upper_body_motion.default_pose_ratio` can adjust it.
+The hand event reads the action's sampled-default mask and always clears both
+forces and torques for those environments, including when constant forces are
+configured. For the sliding payload event, `no_force_ratio` is the total unloaded
+episode fraction, including default poses. The carry-pose unloaded probability is
+`(no_force_ratio - default_pose_ratio) / (1 - default_pose_ratio)`: with the
+defaults, 15% of all episodes are unloaded default poses, 15% are unloaded carry
+poses, and 70% are load eligible, before geometry checks or the force ramp.
+Random load sampling requires `0 <= default_pose_ratio <= no_force_ratio <= 1`;
+an explicit fixed pose samples no default episodes. Training restore validates
+this budget before changing payload settings. Other training disturbances,
+including velocity pushes, still apply.
+
+Constant-force presets bypass random load sampling and payload dynamics, while
+sampled default poses remain unloaded. The physical-box playback option disables
+the reduced load to prevent double loading.
 Partial resets clear only the selected environments' state and wrenches; the
 first active sample initializes derivative history without an acceleration spike.
 
@@ -95,8 +114,9 @@ env PYTHONPATH='' MPLCONFIGDIR=/tmp/mjlab-review-mpl \
 The tests cover friction and tilt, rotation/inertia, wall impulses, wrench
 conservation, reset isolation, configuration restore, basic-task isolation,
 visualization and headless environment integration. Review also checks invalid
-restore atomicity and consistent inertia/display geometry for narrow grasps.
-Validation: **252 passed, 15 skipped**. Ruff passed for the changed Python files.
+restore atomicity, unloaded episode budgets, constant-force reset overrides and
+consistent inertia/display geometry for narrow grasps.
+Validation: **310 passed, 15 skipped**. Ruff passed for the changed Python files.
 
 The cleanup reproduces the previous tilting model's entire recorded eight-second
 checkpoint trace exactly: contents positions, hand vertical forces, inferred tilt,

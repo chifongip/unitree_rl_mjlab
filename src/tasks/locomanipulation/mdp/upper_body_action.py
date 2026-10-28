@@ -196,6 +196,16 @@ class UpperBodyMotionAction(ActionTerm):
     self._start_frame[env_ids] = rand_starts
 
   @property
+  def default_pose_sampling_ratio(self) -> float:
+    """Return the default-pose probability, accounting for fixed-pose overrides."""
+    return self.cfg.default_pose_ratio if self._fixed_pose is None else 0.0
+
+  @property
+  def default_pose_mask(self) -> torch.Tensor:
+    """Identify sampled default-pose episodes, excluding fixed-pose overrides."""
+    return (self._clip_idx == -1) & (self._fixed_pose is None)
+
+  @property
   def action_dim(self) -> int:
     return 0
 

@@ -31,6 +31,7 @@ from src.tasks.locomanipulation.mdp.payload import (
   box_rotation,
   rotational_acceleration,
 )
+from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionAction
 
 
 def make_event(n=3, **parameters):
@@ -61,6 +62,11 @@ def make_event(n=3, **parameters):
       mj_model=SimpleNamespace(opt=SimpleNamespace(gravity=np.array([0, 0, -9.81])))
     ),
   )
+  action = object.__new__(UpperBodyMotionAction)
+  action.cfg = SimpleNamespace(default_pose_ratio=0.0)
+  action._clip_idx = torch.zeros(n, dtype=torch.long)
+  action._fixed_pose = None
+  env.action_manager = SimpleNamespace(get_term=lambda name: action)
   payload = default_payload_params()
   payload.update(mass_range_kg=(4.0, 4.0), initial_offset_m=0.0)
   payload.update(parameters)
@@ -69,6 +75,7 @@ def make_event(n=3, **parameters):
     payload=payload,
     force_scale=1.0,
     no_force_ratio=0.0,
+    upper_body_action_name="upper_body_motion",
   )
   params["asset_cfg"].body_ids = [0, 1]
   event = SlidingBoxForceEvent(SimpleNamespace(params=params), env)
@@ -230,12 +237,13 @@ def test_restore_discards_obsolete_tag_without_mutating_saved_settings():
   assert saved_payload["model_version"] == 2
 
 
-def test_invalid_restore_does_not_partially_change_payload_parameters():
+@pytest.mark.parametrize("no_force_ratio", [0.1, 1.5])
+def test_invalid_restore_does_not_partially_change_payload_parameters(no_force_ratio):
   cfg = carry_cfg()
   original = deepcopy(cfg.events["hand_force"].params)
   saved = deepcopy(original)
   saved["payload"]["mass_range_kg"] = (1.0, 3.0)
-  saved["no_force_ratio"] = 1.5
+  saved["no_force_ratio"] = no_force_ratio
   with pytest.raises(ValueError, match="no_force_ratio"):
     restore_payload_params(cfg, {"events": {"hand_force": {"params": saved}}}, training=True)
   assert cfg.events["hand_force"].params == original
@@ -274,6 +282,136 @@ def test_static_weight_and_existing_critic_encoding():
   observed = wrist_external_force(env, params["asset_cfg"])
   expected_force = expected[:, :, :3].flatten(1)
   torch.testing.assert_close(observed, expected_force.sign() * expected_force.abs().log1p())
+
+
+def test_default_pose_and_random_unloaded_masks_combine_without_disabling_carry_loads():
+  event, env, params, data = make_event(n=4)
+  action = env.action_manager.get_term("upper_body_motion")
+  action._clip_idx[:] = torch.tensor([-1, 0, 0, -1])
+  action.cfg.default_pose_ratio = 0.15
+  params["no_force_ratio"] = 0.3
+  event._episode_draw[:] = torch.tensor([0.9, 0.9, 0.1, 0.1])
+  # All grasps are valid: default-pose selection alone must disable the load.
+  event._position[:] = torch.tensor([0.02, 0.02])
+  call(event, env, params)
+  expected_mask = torch.tensor([True, False, True, True])
+  assert torch.equal(event._no_force_mask, expected_mask)
+  assert torch.equal(event._initialized, ~expected_mask)
+  assert torch.count_nonzero(data.body_external_wrench[expected_mask]) == 0
+  assert torch.count_nonzero(data.body_external_wrench[1, :, :3]) > 0
+  assert torch.count_nonzero(data.body_external_wrench[1, :, 3:]) > 0
+
+
+@pytest.mark.parametrize("default_ratio,no_force_ratio", [
+  (0.15, 0.3), (0.0, 0.3), (0.3, 0.3), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0),
+])
+def test_total_unloaded_budget_includes_default_poses(default_ratio, no_force_ratio):
+  event, env, params, data = make_event(n=100)
+  action = env.action_manager.get_term("upper_body_motion")
+  action.cfg.default_pose_ratio = default_ratio
+  count = round(default_ratio * env.num_envs)
+  action._clip_idx[:count] = -1
+  # Stratify carry draws to check exact proportions without random tolerances.
+  carry_count = env.num_envs - count
+  if carry_count:
+    event._episode_draw[count:] = (torch.arange(carry_count) + 0.5) / carry_count
+  params["no_force_ratio"] = no_force_ratio
+  call(event, env, params)
+  expected_unloaded = round(no_force_ratio * env.num_envs)
+  assert action.default_pose_mask.sum().item() == count
+  assert event._no_force_mask.sum().item() == expected_unloaded
+  assert event._no_force_mask[count:].sum().item() == expected_unloaded - count
+  assert torch.count_nonzero(data.body_external_wrench[event._no_force_mask]) == 0
+  assert event._initialized.sum().item() == env.num_envs - expected_unloaded
+
+
+def test_reset_uses_conditional_carry_unloaded_probability(monkeypatch):
+  event, env, params, _ = make_event()
+  action = env.action_manager.get_term("upper_body_motion")
+  action.cfg.default_pose_ratio = 0.15
+  action._clip_idx[0] = -1
+  params["no_force_ratio"] = 0.3
+  event._episode_draw[:] = torch.tensor([0.2, 0.2, 0.1])
+  call(event, env, params)
+  # 0.2 is above the conditional carry probability (0.15 / 0.85), but below
+  # the total unloaded probability. It must select a loaded carry episode.
+  monkeypatch.setattr(torch, "rand", lambda *shape, **kw: torch.full(shape, 0.2, **kw))
+  event.reset(torch.tensor([0, 1]))
+  assert event._no_force_mask.tolist() == [True, False, True]
+
+
+@pytest.mark.parametrize("default_ratio,no_force_ratio", [
+  (0.4, 0.3), (-0.1, 0.3), (1.1, 1.0), (float("nan"), 0.3),
+])
+def test_invalid_unloaded_budget_rejected_on_reset_and_step(default_ratio, no_force_ratio):
+  event, env, params, _ = make_event()
+  env.action_manager.get_term("upper_body_motion").cfg.default_pose_ratio = default_ratio
+  params["no_force_ratio"] = no_force_ratio
+  for operation in (event.reset, lambda: call(event, env, params)):
+    with pytest.raises(ValueError, match="default_pose_ratio <= no_force_ratio"):
+      operation()
+
+
+@pytest.mark.parametrize("constant_force", [{"z": 0.0}, {"z": -10.0}])
+def test_constant_force_override_bypasses_episode_budget_on_reset_and_step(constant_force):
+  event, env, params, data = make_event(n=2)
+  action = env.action_manager.get_term("upper_body_motion")
+  # A forced diagnostic load has no random unloaded budget, even when pose
+  # sampling is configured to select defaults. Sampled defaults stay unloaded.
+  action.cfg.default_pose_ratio = 1.0
+  action._clip_idx[0] = -1
+  params["constant_force"] = constant_force
+  event.reset()
+  call(event, env, params)
+  assert torch.count_nonzero(data.body_external_wrench[0]) == 0
+  torch.testing.assert_close(
+    data.body_external_wrench[1, :, 2], torch.full((2,), constant_force["z"])
+  )
+
+
+@pytest.mark.parametrize("constant_force", [None, {"z": -10.0}])
+def test_default_pose_clears_previous_wrench_and_fixed_override_can_load(constant_force):
+  event, env, params, data = make_event(n=2)
+  action = env.action_manager.get_term("upper_body_motion")
+  event._position[:] = torch.tensor([0.02, 0.02])
+  call(event, env, params)
+  assert torch.count_nonzero(data.body_external_wrench[:, :, 3:]) > 0
+  action._clip_idx[0] = -1
+  params["constant_force"] = constant_force
+  call(event, env, params)
+  assert event._no_force_mask.tolist() == [True, False]
+  assert torch.count_nonzero(data.body_external_wrench[0]) == 0
+  assert torch.count_nonzero(data.body_external_wrench[1, :, :3]) > 0
+  assert torch.count_nonzero(event._velocity[0]) == 0
+  assert not event._initialized[0]
+  # An explicit fixed carry pose must supersede a stale sampled-default flag.
+  action._fixed_pose = torch.ones(2)
+  action.cfg.default_pose_ratio = 1.0
+  call(event, env, params)
+  assert not event._no_force_mask.any()
+  assert torch.count_nonzero(data.body_external_wrench[0, :, :3]) > 0
+
+
+@pytest.mark.parametrize("env_ids", [torch.tensor([0]), slice(0, 1)])
+def test_partial_reset_updates_default_pose_mask_and_can_resume_carrying(env_ids):
+  event, env, params, data = make_event(n=2)
+  action = env.action_manager.get_term("upper_body_motion")
+  call(event, env, params)
+  survivor_wrench = data.body_external_wrench[1].clone()
+  action._clip_idx[0] = -1
+  event.reset(env_ids)
+  assert event._no_force_mask.tolist() == [True, False]
+  assert torch.count_nonzero(data.body_external_wrench[0]) == 0
+  torch.testing.assert_close(data.body_external_wrench[1], survivor_wrench)
+  assert event._initialized[1]
+  call(event, env, params)
+  assert torch.count_nonzero(data.body_external_wrench[0]) == 0
+  action._clip_idx[0] = 0
+  event.reset(env_ids)
+  call(event, env, params)
+  assert not event._no_force_mask.any()
+  assert event._initialized.all()
+  torch.testing.assert_close(data.body_external_wrench[0], survivor_wrench)
 
 
 def test_viewer_overlay_matches_contents_and_com_without_mutating_dynamics():
@@ -559,9 +697,7 @@ def test_eval_can_switch_between_payload_constant_and_unloaded_conditions():
   assert "force_range_max" not in configured.events["hand_force"].params
   cfg = SimpleNamespace(func=event, params=params)
   env.event_manager = SimpleNamespace(get_term_cfg=lambda name: cfg)
-  env.action_manager = SimpleNamespace(
-    get_term=lambda name: SimpleNamespace(set_fixed_pose=lambda pose: None)
-  )
+  env.action_manager.get_term("upper_body_motion").set_fixed_pose = lambda pose: None
   wrapped = SimpleNamespace(unwrapped=env)
   for condition, expected_total_z in (("payload", -39.24), ("medium", -30.0), ("none", 0)):
     _configure_force_and_pose(wrapped, condition, "x2_carry")
@@ -611,5 +747,19 @@ def test_payload_full_environment_observations_rewards_and_partial_reset():
     torch.testing.assert_close(event._position[1], survivor)
     torch.testing.assert_close(robot.data.body_external_wrench[1], survivor_wrench)
     assert torch.count_nonzero(robot.data.body_external_wrench[0]) == 0
+    # Reset one environment into its HOME_KEYFRAME target while its neighbour
+    # continues carrying. Check both targets and zero payload wrenches in situ.
+    action = env.action_manager.get_term("upper_body_motion")
+    action.cfg.default_pose_ratio = 1.0
+    event_cfg.params["no_force_ratio"] = 1.0
+    env.reset(env_ids=torch.tensor([0]))
+    assert action.default_pose_mask.tolist() == [True, False]
+    assert event._no_force_mask[0]
+    torch.testing.assert_close(action._pose_target[0], action._default_joint_pos[0])
+    for _ in range(3):
+      env.step(torch.zeros(2, 15))
+      assert torch.count_nonzero(robot.data.body_external_wrench[0, event._body_ids]) == 0
+      assert event._no_force_mask[0]
+      torch.testing.assert_close(action._pose_target[0], action._default_joint_pos[0])
   finally:
     env.close()

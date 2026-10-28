@@ -205,9 +205,19 @@ python scripts/train.py Agibot-X2-Locomanipulation-Carry-Finetune-Flat \
     --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
-`--agent.max-iterations=2000` requests 2,000 **additional** updates after the loaded checkpoint. The carry task holds one sampled pose per episode (`pose_only=True`), uses a carry pose on every reset (`default_pose_ratio=0`), and restarts only the hand-force ramp relative to the fine-tune. Height and waist curricula retain their checkpoint progress. If a carry-fine-tune checkpoint is resumed later, its force-ramp progress is retained too. No separate `env_cfgs.py` is needed.
+`--agent.max-iterations=2000` requests 2,000 **additional** updates after the loaded checkpoint. The carry task holds one sampled pose per episode (`pose_only=True`), with this expected training mixture:
 
-The carry task currently inherits the X2 play-mode defaults: arms-down fixed pose, zero hand force, and zero velocity command. Thus `scripts/play.py` does not, by default, test velocity tracking under sampled carry poses; use the generator's file playback to inspect the pose dataset and configure a carry-specific play setup before visual policy evaluation.
+| Episode type | Fraction |
+| --- | --- |
+| Unloaded `HOME_KEYFRAME` upper-body posture | 15% |
+| Unloaded carry posture | 15% |
+| Load-eligible carry posture | 70% |
+
+`default_pose_ratio=0.15` stays fixed throughout fine-tuning. `no_force_ratio=0.3` is the total unloaded fraction, including default-posture episodes, which always receive zero hand payload forces and torques. Adjust the posture fraction with `--env.actions.upper-body-motion.default-pose-ratio`; it must not exceed `no_force_ratio`. Grasp validity and the force curriculum can further reduce loading.
+
+Fine-tuning restarts only the hand-force ramp; height and waist curricula retain their checkpoint progress. Resuming a carry checkpoint retains its force-ramp progress too.
+
+Playback inherits the X2 defaults: arms-down fixed pose, zero hand force, and zero velocity command. Use `--sliding-payload True` to sample carry poses with the reduced payload model.
 
 ### Key CLI Overrides
 
