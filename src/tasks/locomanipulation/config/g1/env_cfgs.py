@@ -318,9 +318,9 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   _postures_path = str(Path(__file__).resolve().parents[5] / "scripts" / "postures.py")
   _spec = _ilu.spec_from_file_location("postures", _postures_path)
   _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
-  height_postures = _mod.HEIGHT_POSTURES
-  cfg.rewards["pose"].params["height_postures"] = height_postures
-  cfg.rewards["stand_still"].params["height_postures"] = height_postures
+  standing_height_postures = _mod.HEIGHT_POSTURES
+  cfg.rewards["pose"].params["standing_height_postures"] = standing_height_postures
+  cfg.rewards["stand_still"].params["standing_height_postures"] = standing_height_postures
 
   ## Curriculum ##
 

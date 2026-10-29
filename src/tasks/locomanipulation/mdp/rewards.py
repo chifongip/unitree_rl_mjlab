@@ -567,9 +567,11 @@ class variable_posture:
     - std_walking (walking_threshold <= speed < running_threshold): Moderate.
     - std_running (speed >= running_threshold): Loose tolerance for large motion.
 
-  Optionally supports height-dependent postures via height_postures dict.
+  Optionally supports height-dependent postures via standing_height_postures dict.
   When base_height_command_name is set, the desired posture is looked up from
-  the height_postures table based on the commanded height.
+  the standing_height_postures table based on the commanded height. An optional
+  walking_height_postures table supplies walking and running references at
+  speeds greater than or equal to walking_threshold.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
@@ -602,14 +604,14 @@ class variable_posture:
 
     # Height-dependent posture lookup.
     self.base_height_command_name = cfg.params.get("base_height_command_name", None)
-    height_postures = cfg.params.get("height_postures", None)
-    if height_postures is not None and self.base_height_command_name is not None:
-      sorted_heights = sorted(height_postures.keys())
+    standing_height_postures = cfg.params.get("standing_height_postures", None)
+    if standing_height_postures is not None and self.base_height_command_name is not None:
+      sorted_heights = sorted(standing_height_postures.keys())
       self._height_keys = torch.tensor(sorted_heights, device=env.device, dtype=torch.float32)
       posture_rows = []
       for h in sorted_heights:
         _, _, vals = resolve_matching_names_values(
-          data=height_postures[h],
+          data=standing_height_postures[h],
           list_of_strings=joint_names,
         )
         posture_rows.append(vals)
@@ -619,6 +621,26 @@ class variable_posture:
     else:
       self._height_keys = None
       self._height_posture_matrix = None
+
+    walking_height_postures = cfg.params.get("walking_height_postures", None)
+    if walking_height_postures is not None and self.base_height_command_name is not None:
+      sorted_heights = sorted(walking_height_postures.keys())
+      self._walking_height_keys = torch.tensor(
+        sorted_heights, device=env.device, dtype=torch.float32
+      )
+      posture_rows = []
+      for h in sorted_heights:
+        _, _, vals = resolve_matching_names_values(
+          data=walking_height_postures[h],
+          list_of_strings=joint_names,
+        )
+        posture_rows.append(vals)
+      self._walking_height_posture_matrix = torch.tensor(
+        posture_rows, device=env.device, dtype=torch.float32
+      )
+    else:
+      self._walking_height_keys = None
+      self._walking_height_posture_matrix = None
 
   def __call__(
     self,
@@ -631,11 +653,13 @@ class variable_posture:
     walking_threshold: float = 0.5,
     running_threshold: float = 1.5,
     base_height_command_name: str | None = None,
-    height_postures: dict | None = None,
+    standing_height_postures: dict | None = None,
     nominal_height: float = 0.785,
+    walking_height_postures: dict | None = None,
   ) -> torch.Tensor:
     del std_standing, std_walking, std_running  # Unused.
-    del base_height_command_name, height_postures, nominal_height  # Used in __init__.
+    del base_height_command_name, standing_height_postures, nominal_height  # Used in __init__.
+    del walking_height_postures  # Used in __init__.
 
     asset: Entity = env.scene[asset_cfg.name]
     command = env.command_manager.get_command(command_name)
@@ -671,6 +695,17 @@ class variable_posture:
     else:
       desired_joint_pos = self.default_joint_pos[:, asset_cfg.joint_ids]
 
+    if self._walking_height_posture_matrix is not None:
+      height_cmd = env.command_manager.get_command(self.base_height_command_name)
+      assert height_cmd is not None
+      distances = torch.abs(height_cmd[:, :1] - self._walking_height_keys.unsqueeze(0))
+      closest_idx = torch.argmin(distances, dim=1)
+      desired_joint_pos = torch.where(
+        (total_speed >= walking_threshold).unsqueeze(1),
+        self._walking_height_posture_matrix[closest_idx],
+        desired_joint_pos,
+      )
+
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
@@ -683,8 +718,8 @@ class stand_still:
   target, 1 when far. Small compensatory movements are barely penalized;
   large deviations are strongly penalized.
 
-  When height_postures and base_height_command_name are set, the target pose is
-  looked up from the height_postures table based on the commanded height.
+  When standing_height_postures and base_height_command_name are set, the target pose is
+  looked up from the standing_height_postures table based on the commanded height.
   Otherwise, default_joint_pos is used.
 
   When force_event_name is set and force_scale > 0, forced envs use a larger
@@ -705,14 +740,14 @@ class stand_still:
 
     # Height-dependent posture lookup.
     self.base_height_command_name = cfg.params.get("base_height_command_name", None)
-    height_postures = cfg.params.get("height_postures", None)
-    if height_postures is not None and self.base_height_command_name is not None:
-      sorted_heights = sorted(height_postures.keys())
+    standing_height_postures = cfg.params.get("standing_height_postures", None)
+    if standing_height_postures is not None and self.base_height_command_name is not None:
+      sorted_heights = sorted(standing_height_postures.keys())
       self._height_keys = torch.tensor(sorted_heights, device=env.device, dtype=torch.float32)
       posture_rows = []
       for h in sorted_heights:
         _, _, vals = resolve_matching_names_values(
-          data=height_postures[h],
+          data=standing_height_postures[h],
           list_of_strings=joint_names,
         )
         posture_rows.append(vals)
@@ -729,13 +764,13 @@ class stand_still:
     command_name: str,
     command_threshold: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    height_postures: dict | None = None,
+    standing_height_postures: dict | None = None,
     base_height_command_name: str | None = None,
     std: float = 0.05,
     force_event_name: str | None = None,
     force_std_scale: float = 5.0,
   ) -> torch.Tensor:
-    del height_postures, base_height_command_name, std, force_event_name, force_std_scale
+    del standing_height_postures, base_height_command_name, std, force_event_name, force_std_scale
 
     asset: Entity = env.scene[asset_cfg.name]
 

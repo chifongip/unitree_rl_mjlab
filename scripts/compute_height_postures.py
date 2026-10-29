@@ -12,7 +12,7 @@ Usage:
     python scripts/compute_height_postures.py --postures-file postures.py # load + replay in viewer
 
 Output: a Python dict that can be saved to a file and imported by env_cfgs.py
-as the height_postures parameter for the variable_posture reward.
+as the standing_height_postures parameter for the variable_posture reward.
 """
 
 import argparse

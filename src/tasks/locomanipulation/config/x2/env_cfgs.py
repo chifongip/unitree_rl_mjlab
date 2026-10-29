@@ -355,23 +355,23 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   ## Height Postures ##
 
   import importlib.util as _ilu
-  _postures_path = str(
-    Path(__file__).resolve().parents[5] / "scripts" / "postures_x2_recorded.py"
-  )
-  _spec = _ilu.spec_from_file_location("postures_x2_recorded", _postures_path)
-  _mod = _ilu.module_from_spec(_spec)
-  _spec.loader.exec_module(_mod)
-  # The resampling pipeline already clamps the exported values to the MJCF
-  # joint limits.  Only select the joints used by height-posture rewards here.
-  height_postures = {
-    height: {
-      name: posture[name]
-      for name in HEIGHT_POSTURE_JOINT_NAMES
+  def load_height_postures(module_name: str) -> dict[float, dict[str, float]]:
+    postures_path = Path(__file__).resolve().parents[5] / "scripts" / f"{module_name}.py"
+    spec = _ilu.spec_from_file_location(module_name, postures_path)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Exported values already obey MJCF limits; select the reward joints.
+    return {
+      height: {name: posture[name] for name in HEIGHT_POSTURE_JOINT_NAMES}
+      for height, posture in mod.HEIGHT_POSTURES.items()
     }
-    for height, posture in _mod.HEIGHT_POSTURES.items()
-  }
-  cfg.rewards["pose"].params["height_postures"] = height_postures
-  cfg.rewards["stand_still"].params["height_postures"] = height_postures
+
+  standing_height_postures = load_height_postures("postures_x2_knees_out")
+  cfg.rewards["pose"].params["standing_height_postures"] = standing_height_postures
+  cfg.rewards["pose"].params["walking_height_postures"] = load_height_postures(
+    "postures_x2_recorded"
+  )
+  cfg.rewards["stand_still"].params["standing_height_postures"] = standing_height_postures
 
   ## Curriculum ##
 

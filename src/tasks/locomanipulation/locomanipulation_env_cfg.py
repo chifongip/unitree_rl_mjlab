@@ -367,7 +367,7 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
         "walking_threshold": 0.1,
         "running_threshold": 1.5,
         "base_height_command_name": "base_height",
-        "height_postures": None,  # Set per-robot.
+        "standing_height_postures": None,  # Set per-robot.
         "nominal_height": 0.785,
       },
     ),
