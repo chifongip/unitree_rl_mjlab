@@ -36,6 +36,13 @@ def foot_transition_metrics(contact, position, yaw, velocity, angular, hip_yaw, 
   )
 
 
+def flight_metrics(contact, height, vertical_velocity, commanded_height, dt):
+  """Measure unsupported flight separately from ordinary single-support steps."""
+  return dict(flight_s=float((~contact.any(dim=-1)).sum() * dt),
+              peak_height_above_command_m=float((height - commanded_height).clamp_min(0).max()),
+              peak_vertical_speed_m_s=float(vertical_velocity.abs().max()))
+
+
 def compare_loaded_transitions(a, b):
   """Compare each direction/load separately; missing events never count as zero."""
   groups = {}
@@ -58,6 +65,13 @@ def compare_loaded_transitions(a, b):
         return not ((needs_liftoff and f['missing_liftoff']) or f['missing_touchdown']
                     or f['post_touchdown_censored']
                     or (direction == 'stand_to_walk' and f['started_airborne']))
+      criteria[direction + '_flight_preserved'] = all(
+        y['flight'][direction]['flight_s'] <= x['flight'][direction]['flight_s'] + 1e-8
+        for x, y in zip(aa, bb))
+      for key in ('peak_height_above_command_m', 'peak_vertical_speed_m_s'):
+        criteria[direction + '_' + key + '_preserved'] = all(
+          y['flight'][direction][key] <= x['flight'][direction][key] + max(.1 * x['flight'][direction][key], .01)
+          for x, y in zip(aa, bb))
       criteria[direction + '_events_complete'] = all(valid(f) for f in fa + fb)
       for key, factor in (('contact_yaw_rad', .5), ('contact_slide_m', 1.)):
         va, vb = [f[key] for f in fa], [f[key] for f in fb]
@@ -71,6 +85,9 @@ def compare_loaded_transitions(a, b):
         pairs = [(x[key], y[key]) for x, y in zip(fa, fb)
                  if x[key] is not None and y[key] is not None]
         criteria[direction + '_' + key + '_preserved'] = all(y <= x + 1e-8 for x, y in pairs)
+    successful = [r for r in bb if r['success']]
+    criteria['complete_transition_success'] = sum(r['success'] and r['reference_complete'] for r in bb) / len(bb) >= .95
+    criteria['reference_completion'] = bool(successful) and sum(r['reference_complete'] for r in successful) / len(successful) >= .95
     criteria['final_placement_accuracy'] = all(r['final_placement_error_m'] <= .03 for r in bb)
     criteria['final_heading_accuracy'] = all(r['final_heading_error_rad'] <= np.deg2rad(10) for r in bb)
     criteria['no_additional_falls'] = sum(r['failed'] for r in bb) <= sum(r['failed'] for r in aa)
@@ -82,3 +99,58 @@ def compare_loaded_transitions(a, b):
       criteria[key] = all(x[key] is not None and y[key] is not None and y[key] <= x[key] + .2 for x, y in zip(aa, bb))
     groups[str(load)] = {k: bool(v) for k, v in criteria.items()}
   return dict(passed=all(all(g.values()) for g in groups.values()), by_load=groups)
+
+
+def stopping_step_metrics(contact, sole_velocity, velocity, position, quaternion, force_peak, start, dt):
+  """Stopping impacts and sway; touchdown velocity uses the preceding policy frame."""
+  import torch
+  touches = contact[1:] & ~contact[:-1]
+  times, feet = torch.where(touches[max(start - 1, 0):])
+  times = times + max(start, 1)
+  slow = torch.where(velocity[start:].norm(dim=-1) < .1)[0]
+  brake = None if not len(slow) else start + int(slow[0])
+  down = (-sole_velocity[times - 1, feet, 2]).clamp_min(0)
+  w, x, y, z = quaternion[start:].unbind(-1)
+  roll = torch.atan2(2 * (w*x + y*z), 1 - 2 * (x*x + y*y))
+  pitch = torch.asin((2 * (w*y - z*x)).clamp(-1, 1))
+  xy = position[start:, :2]
+  # Range is translation invariant and captures fore/aft and lateral excursion.
+  return dict(version=1, touchdown_count=len(times),
+    braking_s=None if brake is None else (brake-start)*dt,
+    post_braking_touchdowns=None if brake is None else int((times > brake).sum()),
+    touchdown_times_s=((times-start)*dt).tolist(),
+    touchdown_feet=feet.tolist(), downward_touchdown_speed_m_s=down.tolist(),
+    peak_downward_touchdown_speed_m_s=float(down.max()) if len(down) else 0.,
+    peak_contact_force_n=float(force_peak[start+1:].max()),
+    roll_pitch_range_rad=[float(roll.max()-roll.min()), float(pitch.max()-pitch.min())],
+    horizontal_sway_range_m=(xy.max(0).values-xy.min(0).values).tolist())
+
+
+def compare_stopping_steps(baseline, candidate):
+  """Compare matched grids without requiring a prescribed stance completion."""
+  a, b = baseline, candidate
+  if any(r.get('stopping_steps', {}).get('version') != 1 for r in a+b):
+    raise ValueError('Regenerate both reports with stopping-step diagnostics version 1')
+  criteria = dict(
+    successful_stops=all(r['success'] and not r['failed'] and not r['censored'] for r in b),
+    no_stopping_flight=all(r['flight']['walk_to_stand']['flight_s'] == 0 for r in b),
+    fewer_post_braking_steps=(all(r['stopping_steps']['post_braking_touchdowns'] is not None for r in a+b)
+      and np.mean([r['stopping_steps']['post_braking_touchdowns'] for r in b]) <
+          np.mean([r['stopping_steps']['post_braking_touchdowns'] for r in a])),
+    settling_preserved=all(x['settle_s'] is not None and y['settle_s'] is not None
+      and y['settle_s'] <= x['settle_s'] + .2 for x,y in zip(a,b)),
+    startup_preserved=all(x['start_delay_s'] is not None and y['start_delay_s'] is not None
+      and y['start_delay_s'] <= x['start_delay_s'] + .2
+      and y['flight']['stand_to_walk']['flight_s'] <= x['flight']['stand_to_walk']['flight_s']
+      and all(np.max(y['hip_motion']['stand_to_walk'][key]) <=
+              max(1.1 * np.max(x['hip_motion']['stand_to_walk'][key]), np.max(x['hip_motion']['stand_to_walk'][key]) + .01)
+              for key in ('peak_velocity_rad_s', 'peak_acceleration_rad_s2', 'peak_jerk_rad_s3'))
+      for x,y in zip(a,b)),
+    walking_preserved=all(y[key] <= max(x[key]*1.1, x[key]+.01)
+      for x,y in zip(a,b) for key in ('walking_velocity_mae','walking_yaw_mae')))
+  for key in ('peak_downward_touchdown_speed_m_s', 'peak_contact_force_n',
+              'roll_pitch_range_rad', 'horizontal_sway_range_m'):
+    criteria[key + '_preserved'] = all(np.all(np.asarray(y['stopping_steps'][key]) <=
+      np.asarray(x['stopping_steps'][key]) + 1e-6) for x,y in zip(a,b))
+  criteria = {k:bool(v) for k,v in criteria.items()}
+  return dict(passed=all(criteria.values()), criteria=criteria)

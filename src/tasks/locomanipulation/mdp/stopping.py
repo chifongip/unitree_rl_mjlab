@@ -21,7 +21,7 @@ class StopVelocityCommandCfg(UniformVelocityCommandCfg):
   transition_s: float = 1.2
   gamma: float = .99
   pose_std: float = .2
-  placement_weight: float = 1.
+  placement_weight: float = 1.  # Legacy configuration compatibility; no stopping bonus.
   swing_weight: float = .5
   slip_weight: float = .25
   yaw_slip_weight: float = .25
@@ -102,9 +102,8 @@ class StopState:
     self.contact_ticks = torch.zeros((n, 2), device=device, dtype=torch.long)
     self.air_ticks = torch.zeros_like(self.contact_ticks)
     self.touchdown = torch.zeros((n, 2), device=device, dtype=torch.bool)
-    self.landing_paid = torch.zeros((n, 2), device=device, dtype=torch.bool)
-    self.landing_guidance = torch.zeros_like(self.landing_paid)
-    self.guidance_active = torch.zeros(n, device=device, dtype=torch.bool)
+    self.landing_credit = torch.zeros((n, 2), device=device)
+    self.swing_supported = torch.ones((n, 2), device=device, dtype=torch.bool)
     self.finished = torch.zeros(n, device=device, dtype=torch.bool)
     self.deadline = torch.zeros_like(self.finished)
     self.previous_phi = torch.zeros(n, device=device)
@@ -119,6 +118,22 @@ class StopState:
     self.targets = torch.tensor([[table[h][k] for k in self.names] for h in sorted(table)], device=device)
     self.leg_columns = [[i for i, name in enumerate(self.names) if name.startswith(side + "_")]
                         for side in ("left", "right")]
+    walking_table = env.cfg.rewards["pose"].params["walking_height_postures"]
+    self.walk_targets = torch.tensor([[walking_table[min(walking_table, key=lambda k: abs(k-h))][name]
+                                       for name in self.names] for h in sorted(table)], device=device)
+    self.reference = torch.zeros((n, len(self.names)), device=device)
+    self.blend = torch.zeros((n, 2), device=device)
+    self.source_blend = torch.zeros_like(self.blend)
+    self.progress = torch.ones((n, 2), device=device)
+    self.credited_progress = torch.ones_like(self.progress)
+    self.swing_start_progress = torch.ones_like(self.progress)
+    self.swing_elapsed = torch.zeros_like(self.progress)
+    self.reference_initialized = torch.zeros(n, device=device, dtype=torch.bool)
+    self.reference_height_index = torch.full((n,), -1, device=device, dtype=torch.long)
+    gait = env.cfg.rewards["foot_gait"].params
+    self.swing_duration = gait["period"] * (1 - gait["threshold"])
+    if self.swing_duration <= 0:
+      raise ValueError("The configured gait must include a positive swing duration")
     self.hip_yaw_ids = [self.names.index(f"{side}_hip_yaw_joint") for side in ("left", "right")]
     # Precompute the same capsule-centerline centroid used by the generator.
     from src.assets.robots.agibot_x2.x2_constants import get_spec
@@ -131,7 +146,6 @@ class StopState:
       offsets.append(points[np.abs(points[:, 2] - np.median(points[:, 2])) <= .005].mean(axis=0))
     self.offsets = torch.tensor(np.array(offsets), dtype=torch.float32, device=device)
     references = []
-    walking_table = env.cfg.rewards["pose"].params["walking_height_postures"]
     for reference in (table, walking_table):
       geometry = []
       headings = []
@@ -168,13 +182,57 @@ class StopState:
     self.mode[ids] = 2
     self.foot_stage[ids] = 2
     for value in (self.age, self.previous_phi, self.shaping, self.starting, self.was_moving,
-                  self.contact_ticks, self.air_ticks, self.touchdown, self.finished, self.deadline, self.guidance_active, self.landing_paid, self.landing_guidance):
+                  self.contact_ticks, self.air_ticks, self.touchdown, self.finished, self.deadline, self.landing_credit, self.reference_initialized, self.swing_elapsed):
       value[ids] = 0
+    self.progress[ids] = 1
+    self.credited_progress[ids] = 1
+    self.swing_start_progress[ids] = 1
+    self.swing_supported[ids] = True
+
+  def reference_critic(self):
+    self.reconcile()
+    return self.blend.clone()
+
+  def reference_at(self, blend):
+    """Reconstruct absolute standing/walking coordinates at the current height."""
+    standing = self.targets[self.reference_height_index]
+    walking = self.walk_targets[self.reference_height_index]
+    reference = standing.clone()
+    for foot, columns in enumerate(self.leg_columns):
+      reference[:, columns] += blend[:, foot, None] * (walking[:, columns] - standing[:, columns])
+    return reference
+
+  @property
+  def destination_reference(self):
+    return self.reference_at(self.was_moving[:, None].expand_as(self.blend))
 
   def reconcile(self):
     cmd = self.command.command
     moving = torch.linalg.norm(cmd[:, :2], dim=1) + cmd[:, 2].abs() >= .1
-    changed = moving != self.was_moving
+    heights = self.env.command_manager.get_command("base_height")[:, 0]
+    index = (heights[:, None] - self.keys[None]).abs().argmin(1)
+    destination = torch.where(moving[:, None], self.walk_targets[index], self.targets[index])
+    initialized = self.reference_initialized.clone()
+    initial = ~initialized
+    changed = initialized & (moving != self.was_moving)
+    # Height lookup stays discrete. It does not introduce height interpolation.
+    height_changed = initialized & (index != self.reference_height_index)
+    direct = initial | height_changed
+    self.reference[direct] = destination[direct]
+    self.blend[direct] = moving[direct, None].float()
+    self.source_blend[direct] = self.blend[direct]
+    self.progress[direct] = 1
+    self.credited_progress[direct] = 1
+    self.mode[initial] = torch.where(moving[initial], 0, 2)
+    self.source_blend[changed] = self.blend[changed]
+    self.progress[changed & ~height_changed] = 0
+    self.credited_progress[changed & ~height_changed] = 0
+    # A reversal before reference movement needs no placement and earns no credit.
+    unchanged = changed[:, None] & (self.source_blend == moving[:, None].float())
+    self.progress[unchanged] = 1
+    self.credited_progress[unchanged] = 1
+    self.reference_initialized[:] = True
+    self.reference_height_index = index.clone()
     self.starting[changed] = moving[changed]
     self.mode[changed] = torch.where(moving[changed], 0, 1)
     self.age[changed] = 0
@@ -183,25 +241,20 @@ class StopState:
     # dropout must not initialize a swing that never actually happened.
     confirmed_air = ~contact & (self.air_ticks >= 2)
     self.foot_stage[changed] = torch.where(confirmed_air[changed], 1, 0)
-    self.landing_paid[changed] = False
-    self.landing_guidance[changed] = False
+    self.foot_stage[unchanged] = 2
+    self.swing_supported[changed] = True
+    self.swing_start_progress[changed] = self.progress[changed]
+    self.swing_elapsed[changed] = 0
+    self.landing_credit[changed] = 0
     self.finished[changed] = False
     self.deadline[changed] = False
     self.touchdown[changed] = False
-    self.guidance_active[changed] = False
     self.was_moving = moving.clone()
     # Preserve zero potential on entry and close any previous stopping phase.
 
   @property
   def active(self):
     return self.starting | (self.mode == 1)
-
-  def pose_mask(self):
-    mask = torch.ones_like(self.q_error)
-    for foot, columns in enumerate(self.leg_columns):
-      pending = self.active & (self.foot_stage[:, foot] == 0)
-      mask[:, columns] = (~pending).float()[:, None]
-    return mask
 
   def feet_critic(self):
     self.reconcile()
@@ -243,28 +296,46 @@ class StopState:
     self.last_step = self.env.common_step_counter
     dt = self.env.step_dt
     errors, index = self.geometry()
-    self.errors = errors
-    q_error = self.robot.data.joint_pos[:, self.joint_ids] - self.targets[index]
-    self.q_error = q_error
+    final_error = self.robot.data.joint_pos[:, self.joint_ids] - self.targets[index]
     active = self.active.clone()
     contact = self.env.scene["feet_ground_contact"].data.found > 0
     self.contact_ticks = torch.where(contact, self.contact_ticks + 1, 0)
     self.air_ticks = torch.where(~contact, self.air_ticks + 1, 0)
-    lifted = active[:, None] & (self.foot_stage == 0) & (self.air_ticks >= 2)
+    pending = self.credited_progress < 1
+    lifted = pending & (self.foot_stage != 1) & (self.air_ticks >= 2)
     self.foot_stage[lifted] = 1
-    self.touchdown = active[:, None] & (self.foot_stage == 1) & (self.contact_ticks >= 2)
-    self.landing_guidance = self.touchdown & ~self.landing_paid
-    self.landing_paid |= self.landing_guidance
+    self.swing_supported[lifted] = True
+    self.swing_start_progress[lifted] = self.progress[lifted]
+    self.swing_elapsed[lifted] = 0
+    # Reference progress represents a supported step, never a jump. Freezing
+    # both references in flight removes the simultaneous-progress landing payoff.
+    opposite_support = self.contact_ticks[:, [1, 0]] >= 2
+    # A hop must not cash out progress earned earlier in the same swing.
+    self.swing_supported[pending & ~contact.any(1)[:, None]] = False
+    airborne = pending & (self.foot_stage == 1) & ~contact & (self.air_ticks >= 2) & opposite_support
+    self.swing_elapsed[airborne] += dt
+    remaining = (self.swing_duration * (1 - self.swing_start_progress)).clamp_min(1e-6)
+    u = (self.swing_elapsed / remaining).clamp(0, 1)
+    smooth = u.square() * (3 - 2 * u)
+    advanced = self.swing_start_progress + (1 - self.swing_start_progress) * smooth
+    self.progress = torch.where(airborne, advanced, self.progress)
+    self.blend = self.source_blend + self.progress * (self.was_moving[:, None].float() - self.source_blend)
+    self.reference = self.reference_at(self.blend)
+    self.q_error = self.robot.data.joint_pos[:, self.joint_ids] - self.reference
+    self.touchdown = pending & (self.foot_stage == 1) & (self.contact_ticks >= 2)
+    creditable = self.touchdown & self.swing_supported
+    self.landing_credit = torch.where(creditable,
+      (self.progress - self.credited_progress).clamp_min(0), 0.)
+    self.credited_progress = torch.where(creditable, self.progress, self.credited_progress)
     self.foot_stage[self.touchdown] = 2
     self.age[active] += dt
     self.deadline = active & (self.age >= self.command.cfg.transition_s - 1e-6)
-    placed = (self.foot_stage == 2).all(1)
+    placed = (self.credited_progress >= 1).all(1)
     # Startup can continue stepping. Stopping must not declare completion
     # while a previously landed foot is swinging again. The deadline remains bounded.
     supported = (self.contact_ticks >= 2).all(1)
     complete = placed & (self.starting | supported)
     self.finished = active & (complete | self.deadline)
-    self.guidance_active = active  # Pay landing guidance on the completion sample.
     self.mode[self.finished & (self.mode == 1)] = 2
     self.starting[self.finished] = False
     phi = -self.speed()
@@ -273,12 +344,14 @@ class StopState:
     next_phi = torch.where((self.mode == 1) & ~self.env.reset_terminated, phi, torch.zeros_like(phi))
     self.shaping = (self.command.cfg.gamma * next_phi - self.previous_phi) / dt
     self.previous_phi = next_phi
+    self.env.extras["log"]["Transition/reference_completion_fraction"] = (self.credited_progress >= 1).all(1).float().mean()
+    self.env.extras["log"]["Transition/reference_progress"] = self.progress.mean()
     self.env.extras["log"]["Transition/standing_fraction"] = (self.mode == 2).float().mean()
     # Walking deliberately uses a different posture reference.
     standing_command = (self.mode != 0).float()
     count = standing_command.sum().clamp_min(1)
     placement_error = errors[..., :2].norm(dim=-1).mean(1)
-    hip_yaw_error = q_error[:, self.hip_yaw_ids].abs().mean(1)
+    hip_yaw_error = final_error[:, self.hip_yaw_ids].abs().mean(1)
     self.env.extras["log"]["Transition/placement_error"] = (placement_error * standing_command).sum() / count
     self.env.extras["log"]["Transition/hip_yaw_error"] = (hip_yaw_error * standing_command).sum() / count
 
@@ -288,6 +361,10 @@ class StopState:
     return torch.cat((torch.nn.functional.one_hot(self.mode, 3).float(),
                       (self.age / self.command.cfg.transition_s).clamp(max=1)[:, None],
                       errors.flatten(1)), 1)
+
+
+def transition_reference_observation(env):
+  return env.command_manager.get_term("twist").state().reference_critic()
 
 
 def transition_feet_observation(env):
@@ -315,13 +392,17 @@ class StopReward:
     state = env.command_manager.get_term("twist").state()
     state.advance()
     stopping = state.mode == 1
-    if self.kind == "pose":
-      mask = state.pose_mask()
+    if self.kind in ("pose", "stand_still"):
       columns = [state.joint_ids.index(joint) for joint in params["asset_cfg"].joint_ids]
-      value = self.func(env, joint_mask=mask[:, columns], **params)
-      soft = torch.exp(-(state.q_error.square() * mask).mean(1) / state.command.cfg.pose_std**2)
+      value = self.func(env, joint_reference=state.reference[:, columns], **params)
+      if self.kind == "stand_still":
+        return torch.where(stopping, torch.zeros_like(value), value)
+      soft = torch.exp(-state.q_error.square().mean(1) / state.command.cfg.pose_std**2)
       return torch.where(stopping, soft, value)
     value = self.func(env, **params)
+    if self.kind in ("track_linear_velocity", "track_angular_velocity",
+                     "leg_joint_vel_penalty", "base_drift_penalty"):
+      return value
     return torch.where(stopping, torch.zeros_like(value), value)
 
 
@@ -329,14 +410,13 @@ def stopping_reward(env):
   state = env.command_manager.get_term("twist").state()
   state.advance()
   e, _ = state.geometry(destination=True)
-  eligible = state.guidance_active[:, None] & state.landing_guidance
+  # Placement incentives apply only to startup, including after the deadline.
+  eligible = state.landing_credit * state.was_moving[:, None]
   heading = torch.exp(-e[..., 2].square() / .3**2)
-  placement = torch.exp(-e[..., :2].square().sum(-1) / .05**2)
   cfg = state.command.cfg
   value = (cfg.swing_weight * heading * eligible).sum(1)
-  value += cfg.placement_weight * (placement * eligible).sum(1) * ~state.was_moving
-  # RewardManager scales rates by dt: each foot earns this bonus once,
-  # independent of swing duration or the control rate.
+  # Reward only newly landed startup progress. Total progress per foot is bounded by
+  # one per command, even across partial landings or after the routing deadline.
   return value / env.step_dt + cfg.shaping_weight * state.shaping
 
 
@@ -370,11 +450,12 @@ def configure_stop_training(cfg, play: bool = False) -> None:
   cfg.commands["twist"] = StopVelocityCommandCfg(**vars(command), sample_profiles=not play)
   cfg.observations["critic"].terms["stop_transition"] = ObservationTermCfg(func=stop_observation)
   cfg.observations["critic"].terms["transition_feet"] = ObservationTermCfg(func=transition_feet_observation)
+  cfg.observations["critic"].terms["transition_reference"] = ObservationTermCfg(func=transition_reference_observation)
   for name in ("pose", "stand_still", "leg_joint_vel_penalty", "base_drift_penalty",
                "track_linear_velocity", "track_angular_velocity", "foot_gait"):
     term = cfg.rewards[name]
     term.params = dict(term.params, original_func=term.func,
-                       transition_kind="pose" if name == "pose" else "gate")
+                       transition_kind=name)
     term.func = StopReward
   cfg.rewards["stopping"] = RewardTermCfg(func=stopping_reward, weight=1.)
   cfg.rewards["foot_slip"] = RewardTermCfg(func=contact_slip_reward, weight=1.)

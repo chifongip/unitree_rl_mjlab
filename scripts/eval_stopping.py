@@ -17,10 +17,10 @@ from src.tasks.locomanipulation.config.x2.env_cfgs import agibot_x2_locomanipula
 from src.tasks.locomanipulation.config.x2.rl_cfg import agibot_x2_locomanipulation_ppo_runner_cfg
 from src.tasks.locomanipulation.rl import X2_LocomanipulationOnPolicyRunner
 if __package__:
-  from .transition_metrics import foot_transition_metrics, compare_loaded_transitions
+  from .transition_metrics import foot_transition_metrics, compare_loaded_transitions, flight_metrics, stopping_step_metrics, compare_stopping_steps
   from .play import _load_params_overrides, _restore_torque_compensation
 else:
-  from transition_metrics import foot_transition_metrics, compare_loaded_transitions
+  from transition_metrics import foot_transition_metrics, compare_loaded_transitions, flight_metrics, stopping_step_metrics, compare_stopping_steps
   from play import _load_params_overrides, _restore_torque_compensation
 
 
@@ -39,13 +39,13 @@ def _settle_time(stopped, dt, hold_s=.5):
 
 
 def evaluate(checkpoint, heights=(.64, .5, .3), phases=8, cases=None, seed=42,
-             scenario="walk-stop", load_n=None, carry_poses=False):
+             scenario="walk-stop", load_n=None, carry_poses=False, save_traces=False):
   """Run held-out evaluation without changing the training process RNG/threads."""
   threads = torch.get_num_threads()
   cpu_rng, numpy_rng, python_rng = torch.get_rng_state(), np.random.get_state(), random.getstate()
   cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None
   try:
-    return _evaluate(checkpoint, heights, phases, cases, seed, scenario, load_n, carry_poses)
+    return _evaluate(checkpoint, heights, phases, cases, seed, scenario, load_n, carry_poses, save_traces)
   finally:
     torch.set_num_threads(threads)
     torch.set_rng_state(cpu_rng)
@@ -57,7 +57,7 @@ def evaluate(checkpoint, heights=(.64, .5, .3), phases=8, cases=None, seed=42,
     gc.collect()
 
 
-def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", load_n=None, carry_poses=False):
+def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", load_n=None, carry_poses=False, save_traces=False):
   """Evaluate a fixed grid with the actor interface used in deployment."""
   if scenario not in ("walk-stop", "stand-walk-stop") or phases < 1 or not heights:
     raise ValueError("Invalid scenario, phases, or empty height grid")
@@ -84,6 +84,9 @@ def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", lo
     cfg.events["hand_force"].params["no_force_ratio"] = 0.
   cfg.scene.num_envs = phases * len(cases)
   cfg.seed = seed
+  for sensor in cfg.scene.sensors:
+    if sensor.name == "feet_ground_contact":
+      sensor.history_length = cfg.decimation
   cfg.events.pop("randomize_terrain", None)
   cfg.commands["twist"].heading_command = False
   cfg.commands["twist"].ranges.heading = None
@@ -151,10 +154,17 @@ def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", lo
             _is_stopped(r.root_link_lin_vel_b[:, :2], r.root_link_ang_vel_b[:, 2], contact),
             r.root_link_lin_vel_b[:, :2].clone(), error.clone(), slip.clone(), rotation.clone(), r.root_link_ang_vel_b[:, 2].clone(),
             centers.clone(), world_yaw.clone(), sole_velocity.clone(), angular.clone(), carry_error.clone(),
-            state.foot_stage.clone(), state.finished.clone(), state.deadline.clone(), state.age.clone()))
+            state.foot_stage.clone(), state.finished.clone(), state.deadline.clone(), state.age.clone(),
+            state.reference.clone(), state.progress.clone(), state.credited_progress.clone(),
+            r.joint_vel[:, q_ids].clone(), r.root_link_lin_vel_w[:, 2].clone(),
+            r.root_link_pos_w.clone(), r.root_link_quat_w.clone(),
+            raw.scene["feet_ground_contact"].data.force_history.norm(dim=-1).amax(dim=-1).clone()))
       q, qe, contact, z, stopped, velocity, error, slip, rotation, yaw_velocity = [torch.stack([t[i] for t in trace]) for i in range(10)]
       centers, world_yaw, sole_v, angular, carry_error = [torch.stack([t[i] for t in trace]) for i in range(10, 15)]
       stages, finished, deadline, age = [torch.stack([t[i] for t in trace]) for i in range(15, 19)]
+      references, progress, credited, qvel = [torch.stack([t[i] for t in trace]) for i in range(19, 23)]
+      vertical_velocity = torch.stack([t[23] for t in trace])
+      position, quaternion, force_peak = [torch.stack([t[j] for t in trace]) for j in range(24, 27)]
       for i in range(raw.num_envs):
         start = int(stops[i])
         walk_start = int(starts[i])
@@ -164,7 +174,9 @@ def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", lo
         end = last + round(.5 / dt) + 1
         motion = (q[last:min(end, len(trace)), i, yaw_ids] - q[last, i, yaw_ids]).abs().max().item()
         row = dict(height=height, command=commands[i].tolist(), phase=i % phases,
-          transition_s=term.cfg.transition_s, transition_guidance="per-foot-v2-landing",
+          transition_s=term.cfg.transition_s, transition_guidance="supported-reference-blend-v1", swing_duration=state.swing_duration,
+          reference_progress=progress[-1, i].tolist(),
+          reference_complete=bool((credited[-1, i] >= 1).all()),
           seed=seed, scenario=scenario, load_n_per_hand=load_n, carry_poses=carry_poses,
           carry_joint_names=carry_names, carry_pose_target=pose_targets[i].tolist(),
           walk_start_s=walk_start*dt, stop_command_s=start*dt,
@@ -181,12 +193,38 @@ def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", lo
           walking_yaw_mae=(yaw_velocity[walk_measure_start:start, i] - commands[i, 2]).abs().mean().item(),
           final_placement_error_m=error[-1, i, :, :2].norm(dim=-1).max().item(),
           final_heading_error_rad=error[-1, i, :, 2].abs().max().item())
+        row["stopping_steps"] = stopping_step_metrics(
+          contact[:, i], sole_v[:, i], velocity[:, i], position[:, i], quaternion[:, i],
+          force_peak[:, i], start, dt)
+        if save_traces:
+          row["stopping_trace"] = dict(dt=dt, contact=contact[:, i].tolist(),
+            sole_velocity=sole_v[:, i].tolist(), position=position[:, i].tolist(),
+            quaternion=quaternion[:, i].tolist(), force_peak_n=force_peak[:, i].tolist())
+          row["reference_trace"] = dict(dt=dt, joint_names=state.names,
+            position=q[:, i].tolist(), reference=references[:, i].tolist(),
+            progress=progress[:, i].tolist(), velocity=qvel[:, i].tolist())
         row["transition_diagnostics"] = {}
         for direction, begin, end_frame in (
           ("stand_to_walk", walk_start, start), ("walk_to_stand", start, len(trace))):
+          measurement_end = min(end_frame, begin + round(1.5 / dt))
+          row.setdefault("flight", {})[direction] = flight_metrics(
+            contact[begin:end_frame, i], z[begin:end_frame, i],
+            vertical_velocity[begin:end_frame, i], height, dt)
+          hip_ids = state.hip_yaw_ids + [state.names.index(f"{side}_hip_roll_joint")
+                                       for side in ("left", "right")]
+          velocity_window = qvel[begin:measurement_end, i, :][:, hip_ids]
+          acceleration = velocity_window.diff(dim=0) / dt
+          jerk = acceleration.diff(dim=0) / dt
+          row.setdefault("hip_motion", {})[direction] = dict(
+            joint_names=[state.names[j] for j in hip_ids],
+            peak_velocity_rad_s=velocity_window.abs().amax(0).tolist(),
+            peak_acceleration_rad_s2=acceleration.abs().amax(0).tolist(),
+            peak_jerk_rad_s3=jerk.abs().amax(0).tolist())
+          reference_done = torch.where((credited[begin:end_frame, i] >= 1).all(1))[0]
           completions = torch.where(finished[begin:end_frame, i])[0]
           completion = begin + int(completions[0]) if len(completions) else None
           row["transition_diagnostics"][direction] = dict(
+            reference_completion_s=None if not len(reference_done) else float(reference_done[0] * dt),
             duration_s=None if completion is None else float(age[completion, i]),
             reason=None if completion is None else ("deadline" if deadline[completion, i] else "landed"),
             stage_changes=[[
@@ -203,14 +241,16 @@ def _evaluate(checkpoint, heights, phases, cases, seed, scenario="walk-stop", lo
       print(f"Evaluated {len(cases) * phases} trials at {height:.2f} m", flush=True)
   finally:
     env.close()
-  return dict(schema_version=3, checkpoint=str(checkpoint), seed=seed, trials=rows,
-    summary=dict(success_rate=float(np.mean([r["success"] for r in rows])),
+  return dict(schema_version=6, checkpoint=str(checkpoint), seed=seed, trials=rows,
+    summary=dict(reference_completion_rate=float(np.mean([r["reference_complete"] for r in rows])),
+      complete_transition_rate=float(np.mean([r["success"] and r["reference_complete"] for r in rows])),
+      success_rate=float(np.mean([r["success"] for r in rows])),
       fall_rate=float(np.mean([r["failed"] for r in rows])),
       median_post_touchdown_hip_yaw_rad=float(np.median([r["post_touchdown_hip_yaw_rad"] for r in rows])),
       max_height_error_m=max(r["final_height_error_m"] for r in rows)))
 
 
-def compare(baseline, candidate):
+def compare(baseline, candidate, stopping_steps=False):
   """Evaluate fixed acceptance thresholds on paired, uncensored trials."""
   a, b = baseline["trials"], candidate["trials"]
   if not a or baseline["seed"] != candidate["seed"] or len(a) != len(b):
@@ -219,14 +259,16 @@ def compare(baseline, candidate):
     raise ValueError("Evaluation schema versions must match")
   for x, y in zip(a, b):
     keys = ("seed", "scenario", "load_n_per_hand", "carry_poses", "carry_joint_names",
-            "carry_pose_target", "walk_start_s", "stop_command_s", "transition_s", "transition_guidance")
+            "carry_pose_target", "walk_start_s", "stop_command_s", "transition_s", "transition_guidance", "swing_duration")
     if any(x.get(k) != y.get(k) for k in keys):
       raise ValueError("Evaluation scenarios, loads, poses, and timing must match")
     if (x["height"], x["command"], x["phase"]) != (y["height"], y["command"], y["phase"]):
       raise ValueError("Evaluation grids must match")
+  if stopping_steps:
+    return compare_stopping_steps(a, b)
   if a[0].get("scenario") == "stand-walk-stop":
-    if baseline.get("schema_version") != 3:
-      raise ValueError("Loaded transition reports must use schema version 3; regenerate both reports")
+    if baseline.get("schema_version") != 6:
+      raise ValueError("Loaded transition reports must use schema version 6; regenerate both reports")
     if any(r.get("load_n_per_hand") is None for r in a):
       raise ValueError("Loaded transition comparisons require explicit loads")
     return compare_loaded_transitions(a, b)
@@ -267,25 +309,32 @@ def main():
   parser.add_argument("--loads-n", nargs="+", type=float, help="Downward force per hand, e.g. 0 20 40")
   parser.add_argument("--carry-poses", action="store_true")
   parser.add_argument("--seeds", nargs="+", type=int, default=[42])
+  parser.add_argument("--save-traces", action="store_true", help="Include joint/reference/progress trajectories")
+  parser.add_argument("--stopping-comparison", action="store_true",
+                      help="Compare physical stopping and impacts instead of exact stance completion")
   args = parser.parse_args()
+  if args.stopping_comparison and not args.baseline:
+    parser.error("--stopping-comparison requires --baseline")
   if args.phases < 1:
     parser.error("phases must be positive")
   cases = [(.5, 0., 0.)] if args.smoke else None
   if cases is None and args.scenario == "stand-walk-stop":
     cases = [(.5, 0., 0.), (-.3, 0., 0.), (0., .2, 0.), (0., -.2, 0.), (0., 0., .5), (0., 0., -.5)]
   reports = [evaluate(args.checkpoint, args.heights, args.phases, cases, seed,
-                      args.scenario, load, args.carry_poses)
+                      args.scenario, load, args.carry_poses, args.save_traces)
              for seed in args.seeds for load in (args.loads_n or [None])]
   report = reports[0]
   if len(reports) > 1:
     rows = [row for result in reports for row in result["trials"]]
-    report = dict(schema_version=3, checkpoint=str(args.checkpoint), seed=args.seeds,
+    report = dict(schema_version=6, checkpoint=str(args.checkpoint), seed=args.seeds,
                   trials=rows, summary=dict(
+                    reference_completion_rate=float(np.mean([r["reference_complete"] for r in rows])),
+                    complete_transition_rate=float(np.mean([r["success"] and r["reference_complete"] for r in rows])),
                     success_rate=float(np.mean([r["success"] for r in rows])),
                     fall_rate=float(np.mean([r["failed"] for r in rows])),
                     max_height_error_m=max(r["final_height_error_m"] for r in rows)))
   if args.baseline:
-    report["comparison"] = compare(json.loads(args.baseline.read_text()), report)
+    report["comparison"] = compare(json.loads(args.baseline.read_text()), report, stopping_steps=args.stopping_comparison)
   args.output.parent.mkdir(parents=True, exist_ok=True)
   args.output.write_text(json.dumps(report, indent=2) + "\n")
   print(json.dumps(report["summary"], indent=2))

@@ -31,48 +31,77 @@ episode. Height and waist-yaw commands are sampled using their existing curricul
 and held for the episode, keeping stopping trials separate from simultaneous
 command changes.
 
-A shared state tracks both command transitions. Each foot progresses from
-awaiting lift, to swing, to landed. Contact changes require two control samples;
-a foot with confirmed airborne history when the command changes starts in swing.
-Raw contact dropouts at the command boundary cannot bypass confirmation. Startup
-finishes after both feet have landed once and may continue stepping. Stopping
-also requires current confirmed support from both feet, so a foot that lifts
-again cannot cause premature completion. Both directions retain the unconditional
-`transition_s=1.2` second deadline (two gait cycles).
-The deadline is unconditional: there are no posture-success gates. Standing
-from reset activates the original standing rewards immediately. Reversing the
-command starts a new transition toward the latest destination; resets clear only
-the selected environments.
+## Contact-aware reference blending
 
-While a foot awaits lift, its six leg joints are masked from the destination
-pose reward, retaining the original denominator and torso contributions. During
-swing and after landing, its destination posture is active. Walking retains its
-original joint tolerances; stopping retains the soft posture tolerance. The active pose reference guides the swinging leg. A one-time bonus evaluates
-sole heading at its first confirmed landing in both directions; stopping also
-evaluates relative standing foot placement. `swing_weight=0.5` and
-`placement_weight=1.0` are per-landing bonus weights. The reward returns a rate
-(dividing by control dt) so the reward manager's dt scaling yields one bonus,
-independent of swing duration. Waiting in the air earns no guidance bonus, and
-repeated lift/landing cycles do not pay again. These replace the old bilateral
-placement and hip-only swing rewards.
-No posture interpolation or fixed stepping order is introduced.
+Standing and walking references are blended independently for each six-joint leg.
+A planted leg tracks its frozen reference, not a newly switched destination.
+After confirmed liftoff with the opposite foot in confirmed support, smoothstep
+advances toward the destination using the
+existing nominal swing duration: gait period times one minus stance fraction,
+currently 0.264 seconds. Early landing freezes the intermediate reference. On
+another swing, a new smoothstep segment covers the remaining progress using
+nominal swing duration times remaining progress. No new timing parameter is
+introduced. Double-foot flight freezes both references and cannot generate new
+landing-progress credit. A swing that includes double-foot flight cannot pay
+landing credit, including progress earned before that flight. The reference is
+retained, and a later supported placement can earn the unpaid credit. A supported
+step may resume progress after landing. Reference position is continuous at reversals and contact events;
+unexpected touchdown can interrupt reference velocity.
 
-Walking velocity and gait rewards remain active during startup. During stopping,
-strict stillness, base drift, velocity tracking and periodic contact terms are
-deferred until completion or the deadline. Contact slip penalties remain active
-throughout. Potential shaping accounts for entry, exit, reversal and termination,
-so there is no initial-speed bonus or constant elapsed-time penalty.
+A command reversal snapshots the current blended reference and changes its
+destination. Reset episodes initialize directly to their current command's
+reference. Contact changes still require two samples. The common waist reference
+is preserved. Height selection remains discrete: a changed nearest-height row
+selects that row directly, so continuity across height-command changes is not
+claimed. Training holds height fixed within an episode.
 
-The actor retains its 430-input layout and phase encoding. The existing ten
-critic transition features are supplemented by three values: startup-active,
-left foot stage and right foot stage (0, 0.5, 1). This gives 121 critic inputs.
-Symmetry swaps the foot stages and reflects the signed placement errors.
-Existing checkpoints support actor-only evaluation; train the new critic from
-scratch. Height tables retain nearest-height lookup with no interpolation.
+During stopping, full linear-velocity and angular-velocity tracking remain
+active at their existing weights, along with leg-joint-velocity and base-drift
+penalties. This restores the objective of braking and stabilizing throughout
+the grace period. Pose relaxation and gait routing retain their existing behavior.
 
-`Transition/standing_fraction` reports the standing reward phase rather than
-measured pose success. Placement and hip-yaw errors are averaged only over
-standing commands, including stopping, and report zero when none are present.
+The 1.2-second routing deadline restores normal standing rewards unconditionally.
+It never forces a planted leg's reference to its endpoint. Reference updates and
+diagnostic landing progress can continue on later swings after that deadline;
+reward credit continues only for startup. Both
+pose and stand-still rewards track the current reference, including partial
+references after stopping. This replaces binary pose masking. Existing walking
+joint tolerances and stopping soft-pose tolerances are retained.
+
+Command reversals that leave a leg reference already at its destination mark
+that leg complete without new credit, avoiding rewards for unnecessary steps.
+Each confirmed landing still records reference progress for diagnostics.
+Only stand-to-walk earns a heading-weighted landing-progress bonus; a standing
+command earns no landing bonus, even after the routing deadline. The
+`placement_weight` configuration field is retained for compatibility but no
+longer contributes to this reward. Startup credit retains RewardManager dt
+compensation and its per-command bound. Braking potential shaping and contact
+slip penalties remain active.
+
+The actor remains at 430 inputs. The critic adds only two absolute leg-blend
+coordinates to its existing 121 inputs, giving 123: zero means standing, one
+means walking. These describe the current reference even after a reversal; local
+transition progress alone would not. Joint references are reconstructed from
+these coordinates and the commanded-height tables. Symmetry swaps the two
+coordinates without sign changes. Existing checkpoints support actor-only
+evaluation; train the new critic from scratch. The actor must infer reference
+state from commands and proprioceptive history. This compact critic input has
+not yet been compared against the full reference input in trained-policy tests.
+
+Reference completion is separate from physical stopping and reward routing.
+Diagnostics log mean progress and completion fraction. Legacy exact-stance comparisons require
+at least 95% reference completion among successful trials, and at least 95%
+complete transitions (physical stop plus reference completion) across all trials. A quiet partial stance
+does not pass those legacy comparisons. Use `--stopping-comparison` for the
+physical-stop experiment below. No additional hip-motion penalties are introduced.
+
+Dense validation sampled 29,106 mixed-leg configurations with neutral and two
+carry poses across all table heights. There were no joint-limit violations or
+new penetrating contacts in the trained 0.30–0.64 m range. Maximum foot-path
+excursion beyond the endpoint box was 4.3 mm, with no heading overshoot. At
+0.22–0.26 m, some carry-pose blends introduce elbow/thigh collisions. These
+heights are outside the current training range and are not validated for loaded
+reference blending. This finite scan is not a guarantee for every arm pose.
 
 Reward weights, sampling fractions, and the grace period (`transition_s`)
 are fields of the task's twist command configuration. Foot geometry is derived
@@ -155,7 +184,7 @@ stands for at least 4 seconds. The command grid includes forward/backward,
 both lateral directions, and both turning directions. Initial pose sampling is
 seeded for every height; actual joint names and targets are saved in each row
 for replay and exact comparison. Every comparison checks scenario, load, pose,
-seed, height, command, and command-switch timing. Loaded comparisons require version 3 reports; regenerate both baseline and
+seed, height, command, and command-switch timing. Loaded comparisons require version 6 reports; regenerate both baseline and
 candidate reports with the current evaluator.
 
 Per-foot metrics include grounded sliding/yaw, motion before first liftoff,
@@ -191,3 +220,75 @@ The loaded diagnostic also records transition duration, completion reason
 (`landed` or `deadline`), and per-foot stage-change times for both directions.
 Comparisons require matching maximum duration and guidance protocol. Regenerate
 baseline reports with the same evaluator before comparing a newly trained model.
+
+
+Add `--save-traces` to include actual/reference joint positions, leg progress,
+and joint velocities. Reports include first-1.5-second hip speed, acceleration,
+and jerk peaks in both directions, plus reference completion times and counts.
+Physical stop success is reported separately from complete-transition success.
+Regenerate both reports with guidance protocol `supported-reference-blend-v1` and schema 6.
+
+
+Both transition directions now report unsupported flight time, peak base rise
+above commanded height, and peak world-vertical speed over the full command
+interval. Hip smoothness metrics retain the first-1.5-second window. Late hops
+therefore cannot evade flight checks after the routing deadline.
+Paired loaded comparisons reject increased flight time and more than 10%/0.01
+regression in base rise or vertical speed. This distinguishes
+ordinary single-support steps from hopping without imposing double support.
+
+The test-3 checkpoint reproduced 20–40 ms of double-foot flight when stopping
+in two loaded forward trials, versus none for test-2. The blend/reward fix does
+not alter an already trained actor: validate it in a new training experiment.
+
+## Stopping stabilization experiment
+
+The first correction for excessive stopping steps preserves both posture tables,
+supported reference blending, the 1.2-second deadline, and startup guidance.
+It removes stopping landing bonuses and restores linear/angular tracking,
+leg-velocity and drift penalties during stopping. Actor/critic input dimensions
+and the other tasks are unchanged. Existing actors must be retrained to test the
+new objective; replaying test-4 only establishes the baseline.
+
+Train from scratch with the same test-4 seed, environment count, and budget:
+
+```bash
+PYTHONPATH="" .venv/bin/python scripts/train.py Agibot-X2-Locomanipulation-Transition-Flat \
+  --env.scene.num-envs=4096 --agent.seed=42 --agent.max-iterations=10001 \
+  --agent.run-name=stopping-stabilization
+```
+
+Generate the baseline and candidate reports using the same command (replace
+CHECKPOINT and REPORT for each run):
+
+```bash
+PYTHONPATH="" .venv/bin/python scripts/eval_stopping.py \
+  --checkpoint CHECKPOINT --output REPORT --scenario stand-walk-stop \
+  --carry-poses --loads-n 0 --smoke --phases 8 --heights .64 --seeds 42 43 \
+  --save-traces
+```
+
+`--smoke` selects the requested 0.5 m/s forward command; here eight phases and
+two seeds give 16 trials. For the candidate, add
+`--baseline BASELINE_REPORT --stopping-comparison` to select physical-stop
+acceptance instead of the legacy exact-stance criteria. Both reports must have
+`stopping_steps.version=1`; regenerate older baselines. These are additive
+fields in report schema 6, so legacy comparisons remain available.
+
+The new comparison requires fewer mean post-braking touchdowns, successful
+uncensored stops, no falls or stopping flight, and no increase in touchdown
+speed, peak contact force, roll/pitch range, or horizontal excursion. Settling
+and startup delay may increase by at most 0.2 seconds. Startup hip-motion peaks
+and walking errors use 10%/0.01 tolerances; startup flight must not increase.
+Reference completion remains a separate diagnostic, not a physical-stop gate.
+
+Touchdowns and pre-impact downward sole velocity are sampled at policy rate.
+Post-braking counts begin strictly after the first stopping sample with
+horizontal speed below 0.1 m/s; missing braking is reported as null and fails
+comparison. Contact force is the net force per foot: the evaluator enables
+sensor history across every physics substep and takes its peak norm, rather
+than averaging substep peaks away. Body sway is reported as world-horizontal
+position range and roll/pitch range over the full stop interval. These metrics
+include normal braking excursion; they are paired comparisons, not universal
+stability thresholds. Raw policy-rate contact, sole velocity, root pose, and
+per-step force peaks are included with `--save-traces`.

@@ -27,7 +27,7 @@ def env():
 def test_dimensions_profiles_and_real_steps(env):
   obs, _ = env.reset()
   assert obs["actor"].shape == (4, 430)
-  assert obs["critic"].shape == (4, 121)
+  assert obs["critic"].shape == (4, 123)
   cmd = env.command_manager.get_term("twist")
   cmd.profile[:] = torch.tensor([0, 1, 2, 2])
   cmd.switch_at[:] = .02
@@ -59,6 +59,7 @@ def test_command_standing_and_bounded_transition(env, monkeypatch):
   assert (terms[0].func(env, **terms[0].params) > 0).all()
 
   cmd.vel_command_b[:, 0] = .5
+  state.reset(torch.arange(4))  # Begin from an established walking reference.
   state.reconcile()
   assert torch.all(state.mode == 0)
   cmd.vel_command_b[:] = 0
@@ -70,12 +71,13 @@ def test_command_standing_and_bounded_transition(env, monkeypatch):
 
   # Deliberately bad posture, placement, speed and missing contacts cannot
   # extend the grace period or prevent the original standing rewards returning.
+  positions = env.scene["robot"].data.joint_pos.clone()
+  positions[:, state.joint_ids] = state.targets[0] + .5
   data = SimpleNamespace(
-    joint_pos=state.targets[0].expand(4, -1).clone() + .5,
+    joint_pos=positions,
     root_link_lin_vel_b=torch.ones((4, 3)),
   )
   monkeypatch.setattr(state, "robot", SimpleNamespace(data=data))
-  monkeypatch.setattr(state, "joint_ids", list(range(len(state.names))))
   monkeypatch.setattr(state, "geometry", lambda: (
     torch.ones(4, 2, 3), torch.zeros(4, dtype=torch.long)))
   env.scene["feet_ground_contact"].data.found[:] = 0
@@ -91,7 +93,11 @@ def test_command_standing_and_bounded_transition(env, monkeypatch):
       params = {k: v for k, v in term.params.items()
                 if k not in ("original_func", "transition_kind")}
       value = term.func(env, **term.params)
-      expected = torch.zeros_like(value) if step < steps - 1 else term.func.func(env, **params)
+      if term.func.kind == "stand_still":
+        columns = [state.joint_ids.index(j) for j in params["asset_cfg"].joint_ids]
+        params["joint_reference"] = state.reference[:, columns]
+      expected = (torch.zeros_like(value) if step < steps - 1 and term.func.kind == "stand_still"
+                  else term.func.func(env, **params))
       torch.testing.assert_close(value, expected)
   for _ in range(10):
     env.common_step_counter += 1
@@ -393,82 +399,6 @@ def test_transition_metrics_exclude_walking_postures(env, monkeypatch):
   assert env.extras["log"]["Transition/hip_yaw_error"] == 0
 
 
-@pytest.mark.parametrize('starting', [False, True])
-@pytest.mark.parametrize('lead', [0, 1])
-@torch.inference_mode()
-def test_shared_foot_stages_and_early_completion(env, starting, lead):
-  env.reset()
-  cmd = env.command_manager.get_term('twist')
-  state = cmd.state()
-  state.reset(torch.arange(4))
-  contact = env.scene['feet_ground_contact'].data.found
-  contact[:] = 1
-  cmd.vel_command_b[:] = 0
-  if not starting:
-    cmd.vel_command_b[:, 0] = .5
-    state.reconcile()
-    cmd.vel_command_b[:] = 0
-  else:
-    cmd.vel_command_b[:, 0] = .5
-  state.reconcile()
-  assert state.active.all() and (state.foot_stage == 0).all()
-  mask = state.pose_mask()
-  assert (mask[:, sum(state.leg_columns, [])] == 0).all()
-  torso = [i for i in range(len(state.names)) if i not in sum(state.leg_columns, [])]
-  assert (mask[:, torso] == 1).all()
-
-  def tick(left, right):
-    contact[:] = torch.tensor([left, right])
-    env.common_step_counter += 1
-    state.advance()
-
-  airborne = [1, 1]
-  airborne[lead] = 0
-  tick(*airborne)
-  assert (state.foot_stage == 0).all()  # one-sample contact noise
-  tick(1, 1)
-  tick(*airborne)
-  tick(*airborne)
-  assert (state.foot_stage[:, lead] == 1).all()
-  assert (state.pose_mask()[:, state.leg_columns[lead]] == 1).all()
-  assert (state.pose_mask()[:, state.leg_columns[1-lead]] == 0).all()
-  tick(1, 1)
-  assert (state.foot_stage[:, lead] == 1).all()
-  tick(1, 1)
-  assert state.touchdown[:, lead].all() and state.active.all()
-  airborne = [1, 1]
-  airborne[1-lead] = 0
-  tick(*airborne)
-  tick(*airborne)
-  tick(1, 1)
-  tick(1, 1)
-  assert state.finished.all() and not state.deadline.any()
-  assert not state.active.any()
-  assert (state.mode == (0 if starting else 2)).all()
-  assert (state.age < cmd.cfg.transition_s).all()
-
-
-@torch.inference_mode()
-def test_transition_reversal_airborne_initialization_and_partial_reset(env):
-  env.reset()
-  cmd = env.command_manager.get_term('twist')
-  state = cmd.state()
-  state.reset(torch.arange(4))
-  env.scene['feet_ground_contact'].data.found[:] = torch.tensor([0, 1])
-  state.air_ticks[:, 0] = 2  # confirmed airborne history before the command
-  cmd.vel_command_b[:] = torch.tensor([.5, 0., 0.])
-  state.reconcile()
-  assert state.starting.all()
-  assert (state.foot_stage == torch.tensor([1, 0])).all()
-  cmd.vel_command_b[:] = 0
-  state.reconcile()
-  assert (state.mode == 1).all() and not state.starting.any()
-  assert (state.age == 0).all()
-  before = state.feet_critic().clone()
-  state.reset(torch.tensor([0]))
-  assert state.mode[0] == 2 and not state.active[0]
-  torch.testing.assert_close(state.feet_critic()[1:], before[1:])
-
 
 def test_transition_feet_mirror():
   mirror = _get_term_mirror_x2('transition_feet')
@@ -480,168 +410,290 @@ def test_transition_feet_mirror():
   torch.testing.assert_close(value, original)
 
 
-@torch.inference_mode()
-def test_pose_mask_removes_only_pending_leg_incentive(env, monkeypatch):
-  env.reset()
-  cmd = env.command_manager.get_term('twist')
-  state = cmd.state()
-  env.scene['feet_ground_contact'].data.found[:] = 1
-  state.reset(torch.arange(4))
-  cmd.vel_command_b[:] = torch.tensor([.5, 0., 0.])
-  state.reconcile()
-  term = env.reward_manager.get_term_cfg('pose')
-  params = {k:v for k,v in term.params.items() if k not in ('original_func','transition_kind')}
-  data = env.scene['robot'].data
-  positions = data.joint_pos.clone()
-  monkeypatch.setattr(type(data), 'joint_pos', property(lambda _: positions))
-  joint = state.joint_ids[state.leg_columns[0][0]]
-  original = data.joint_pos[:, joint].clone()
-  try:
-    masked = term.func.func(env, joint_mask=state.pose_mask(), **params)
-    data.joint_pos[:, joint] += .5
-    torch.testing.assert_close(term.func.func(env, joint_mask=state.pose_mask(), **params), masked)
-    state.foot_stage[:, 0] = 1
-    changed = term.func.func(env, joint_mask=state.pose_mask(), **params)
-    data.joint_pos[:, joint] = original
-    restored = term.func.func(env, joint_mask=state.pose_mask(), **params)
-    assert not torch.allclose(changed, restored)
-  finally:
-    data.joint_pos[:, joint] = original
 
 
-@pytest.mark.parametrize('starting', [False, True])
-@torch.inference_mode()
-def test_sole_guidance_is_landing_only(env, monkeypatch, starting):
-  from src.tasks.locomanipulation.mdp.stopping import stopping_reward
-  env.reset()
-  cmd = env.command_manager.get_term('twist')
-  state = cmd.state()
-  monkeypatch.setattr(state, 'advance', lambda: None)
-  monkeypatch.setattr(cmd.cfg, 'placement_weight', 0.)
-  monkeypatch.setattr(cmd.cfg, 'shaping_weight', 0.)
-  state.guidance_active[:] = True
-  state.was_moving[:] = starting
-  state.touchdown[:] = False
-  state.landing_guidance[:] = False
-  state.foot_stage[:] = 2
-  state.foot_stage[:, 0] = 1
-  contact = env.scene['feet_ground_contact'].data.found
-  contact[:] = 1
-  contact[:, 0] = 0
-  errors = torch.zeros(4, 2, 3)
-  def geometry(destination=False):
-    assert destination
-    return errors, torch.zeros(4, dtype=torch.long)
-  monkeypatch.setattr(state, 'geometry', geometry)
-  torch.testing.assert_close(stopping_reward(env), torch.zeros(4))
-  state.landing_guidance[:, 0] = True
-  aligned = stopping_reward(env)
-  torch.testing.assert_close(aligned * env.step_dt, torch.full((4,), cmd.cfg.swing_weight))
-  errors[:, 0, 2] = .5
-  assert (stopping_reward(env) < aligned).all()
-  contact[:] = 1
-  state.landing_guidance[:] = False
-  torch.testing.assert_close(stopping_reward(env), torch.zeros(4))
-  state.touchdown[:, 0] = True
-  state.landing_guidance[:, 0] = True
-  assert (stopping_reward(env) > 0).all()
-  state.guidance_active[:] = False
-  torch.testing.assert_close(stopping_reward(env), torch.zeros(4))
-
-
-@pytest.mark.parametrize('starting', [False, True])
-@torch.inference_mode()
-def test_completion_handles_a_foot_lifting_again(env, starting):
+def prepare_blend(env, starting):
   env.reset()
   cmd = env.command_manager.get_term('twist')
   state = cmd.state()
   state.reset(torch.arange(4))
   contact = env.scene['feet_ground_contact'].data.found
   contact[:] = 1
-  cmd.vel_command_b[:] = torch.tensor([.5, 0., 0.])
+  cmd.vel_command_b[:] = torch.tensor([0. if starting else .5, 0., 0.])
   state.reconcile()
-  if not starting:
-    cmd.vel_command_b[:] = 0
-    state.reconcile()
-  def tick(left, right):
+  source = state.reference.clone()
+  cmd.vel_command_b[:, 0] = .5 if starting else 0.
+  state.reconcile()
+  def tick(left=1, right=1):
     contact[:] = torch.tensor([left, right])
     env.common_step_counter += 1
     state.advance()
-  for pair in [(0,1),(0,1),(1,1),(1,1),(1,0),(1,0),(0,1),(0,1)]:
-    tick(*pair)
-  assert (state.foot_stage == 2).all()  # both have landed once
-  assert bool(state.finished.all()) == starting
-  if not starting:
-    assert state.active.all()
-    tick(1,1)
-    assert not state.finished.any()
-    tick(1,1)
-    assert state.finished.all() and not state.deadline.any()
+  return cmd, state, source, tick
+
+
+@pytest.mark.parametrize('starting', [False, True])
+@pytest.mark.parametrize('lead', [0, 1])
+@torch.inference_mode()
+def test_partial_blend_freezes_on_early_landing_and_resumes(env, starting, lead):
+  cmd, state, source, tick = prepare_blend(env, starting)
+  torch.testing.assert_close(state.reference, source)
+  for _ in range(3):
+    tick()
+  torch.testing.assert_close(state.reference, source)
+  air = [1,1]
+  air[lead] = 0
+  tick(*air)  # unconfirmed contact dropout
+  torch.testing.assert_close(state.reference, source)
+  for _ in range(4):
+    tick(*air)
+  assert ((state.progress[:, lead] > 0) & (state.progress[:, lead] < 1)).all()
+  intermediate = state.reference.clone()
+  tick()
+  tick()
+  torch.testing.assert_close(state.reference, intermediate)
+  credit = state.credited_progress.clone()
+  for _ in range(round(cmd.cfg.transition_s / env.step_dt) + 2):
+    tick()
+  assert not state.active.any()  # deadline restores normal routing
+  torch.testing.assert_close(state.reference, intermediate)
+  assert not (state.credited_progress >= 1).all()
+  for _ in range(16):
+    tick(*air)
+  tick()
+  tick()
+  assert (state.progress[:, lead] == 1).all()
+  assert (state.credited_progress[:, lead] == 1).all()
+  assert (state.credited_progress[:, 1-lead] == credit[:, 1-lead]).all()
+  torch.testing.assert_close(state.reference[:, state.leg_columns[lead]],
+    state.destination_reference[:, state.leg_columns[lead]])
 
 
 @torch.inference_mode()
-def test_contact_dropout_at_command_edge_is_not_a_swing(env):
-  env.reset()
-  cmd = env.command_manager.get_term('twist')
-  state = cmd.state()
-  state.reset(torch.arange(4))
-  contact = env.scene['feet_ground_contact'].data.found
-  contact[:] = 1
-  cmd.vel_command_b[:] = torch.tensor([.5, 0., 0.])
-  state.reconcile()
-  # Single raw dropout, with no confirmed air history.
-  contact[:] = 0
+def test_blend_reversal_reset_and_reference_symmetry(env):
+  cmd, state, _, tick = prepare_blend(env, True)
+  for _ in range(5):
+    tick(0,1)
+  before = state.reference.clone()
   cmd.vel_command_b[:] = 0
   state.reconcile()
-  assert (state.foot_stage == 0).all()
-  for _ in range(2):
-    contact[:] = 1
-    env.common_step_counter += 1
-    state.advance()
-  assert (state.foot_stage == 0).all()
-  assert not state.finished.any() and not state.landing_paid.any()
-  assert (state.pose_mask()[:, sum(state.leg_columns, [])] == 0).all()
+  torch.testing.assert_close(state.reference, before)
+  torch.testing.assert_close(state.reference_at(state.source_blend), before)
+  state.reset(torch.tensor([0]))
+  cmd.vel_command_b[0] = 0
+  state.reconcile()
+  torch.testing.assert_close(state.reference[1:], before[1:])
+  assert (state.progress[0] == 1).all()
+  mirror = _get_term_mirror_x2('transition_reference')
+  value = state.reference_critic().clone()
+  original = value.clone()
+  mirror.apply(value, None)
+  torch.testing.assert_close(value, original[:,[1,0]])
+  mirror.apply(value, None)
+  torch.testing.assert_close(value, original)
 
 
 @torch.inference_mode()
-def test_landing_bonus_has_no_airtime_or_repeat_payment(env, monkeypatch):
+@pytest.mark.parametrize("starting", [False, True])
+def test_landed_progress_credit_is_bounded_and_never_pays_for_waiting(env, monkeypatch, starting):
   from src.tasks.locomanipulation.mdp.stopping import stopping_reward
-  env.reset()
-  cmd = env.command_manager.get_term('twist')
-  state = cmd.state()
+  cmd, state, _, _ = prepare_blend(env, starting)
+  monkeypatch.setattr(cmd.cfg, 'shaping_weight', 0.)
+  monkeypatch.setattr(state, 'geometry', lambda destination=False:(
+    torch.zeros(4,2,3), torch.zeros(4,dtype=torch.long)))
   contact = env.scene['feet_ground_contact'].data.found
+  total = torch.zeros(4)
+  def tick(left,right):
+    contact[:] = torch.tensor([left,right])
+    env.common_step_counter += 1
+    value = stopping_reward(env) * env.step_dt
+    return value
+  for _ in range(4):
+    torch.testing.assert_close(tick(0,1), torch.zeros(4))
+  total += tick(1,1)
+  total += tick(1,1)
+  assert ((state.credited_progress[:,0] > 0) & (state.credited_progress[:,0] < 1)).all()
+  for _ in range(70):
+    torch.testing.assert_close(tick(1,1), torch.zeros(4))
+  for _ in range(16):
+    total += tick(0,1)
+  total += tick(1,1)
+  total += tick(1,1)
+  for _ in range(16):
+    total += tick(1,0)
+  total += tick(1,1)
+  total += tick(1,1)
+  torch.testing.assert_close(total, torch.full((4,), 2 * cmd.cfg.swing_weight if starting else 0.))
+  for _ in range(4):
+    torch.testing.assert_close(tick(0,0), torch.zeros(4))
+  for _ in range(4):
+    torch.testing.assert_close(tick(1,1), torch.zeros(4))
+
+
+@torch.inference_mode()
+def test_blended_reference_is_used_by_pose_and_stand_still(env, monkeypatch):
+  cmd, state, _, tick = prepare_blend(env, False)
+  for _ in range(4):
+    tick(0,1)
+  tick()
+  tick()
+  for _ in range(70):
+    tick()
+  # References remain intermediate after normal standing penalties return.
+  assert not state.active.any() and (state.progress[:,0] < 1).all()
+  data = env.scene['robot'].data
+  positions = data.joint_pos.clone()
+  positions[:, state.joint_ids] = state.reference
+  monkeypatch.setattr(type(data),'joint_pos',property(lambda _:positions))
+  for name in ('pose','stand_still'):
+    term = env.reward_manager.get_term_cfg(name)
+    value = term.func(env, **term.params)
+    torch.testing.assert_close(value, torch.ones(4) if name == 'pose' else torch.zeros(4))
+
+
+@torch.inference_mode()
+def test_absolute_blend_describes_reference_after_multiple_reversals(env):
+  cmd, state, _, tick = prepare_blend(env, True)
+  for moving in (True, False, True, False):
+    before = state.reference.clone()
+    cmd.vel_command_b[:, 0] = .5 if moving else 0.
+    state.reconcile()
+    torch.testing.assert_close(state.reference, before)
+    for _ in range(4):
+      tick(0,1)
+    tick()
+    tick()
+    coordinate = state.reference_critic()
+    assert coordinate.shape == (4,2)
+    assert ((coordinate >= 0) & (coordinate <= 1)).all()
+    index = state.reference_height_index
+    for foot, columns in enumerate(state.leg_columns):
+      expected = ((1-coordinate[:, foot, None]) * state.targets[index][:, columns]
+                  + coordinate[:, foot, None] * state.walk_targets[index][:, columns])
+      torch.testing.assert_close(state.reference[:, columns], expected, atol=1e-6, rtol=0)
+
+
+@torch.inference_mode()
+def test_jump_cannot_advance_references_or_earn_landing_credit(env, monkeypatch):
+  from src.tasks.locomanipulation.mdp.stopping import stopping_reward
+  cmd, state, source, tick = prepare_blend(env, False)
   monkeypatch.setattr(cmd.cfg, 'shaping_weight', 0.)
   monkeypatch.setattr(state, 'geometry', lambda destination=False: (
     torch.zeros(4,2,3), torch.zeros(4,dtype=torch.long)))
-  def rollout(air_frames, repeat=False):
-    state.reset(torch.arange(4))
-    contact[:] = 1
-    cmd.vel_command_b[:] = torch.tensor([.5,0.,0.])
-    state.reconcile()
-    cmd.vel_command_b[:] = 0
-    state.reconcile()
-    total = torch.zeros(4)
-    def tick(left,right):
-      contact[:] = torch.tensor([left,right])
-      env.common_step_counter += 1
-      reward = stopping_reward(env) * env.step_dt
-      return reward
-    for _ in range(air_frames):
-      reward = tick(0,1)
-      torch.testing.assert_close(reward, torch.zeros(4))
-      total += reward
-    total += tick(1,1)
-    total += tick(1,1)
-    assert state.landing_paid[:,0].all()
-    if repeat:
-      for pair in [(0,1),(0,1),(1,1),(1,1)]:
-        reward = tick(*pair)
-        torch.testing.assert_close(reward, torch.zeros(4))
-        total += reward
-    for pair in [(1,0),(1,0),(1,1),(1,1),(1,1)]:
-      total += tick(*pair)
-    return total
-  expected = torch.full((4,), 2 * (cmd.cfg.swing_weight + cmd.cfg.placement_weight))
-  torch.testing.assert_close(rollout(3), expected)
-  torch.testing.assert_close(rollout(12), expected)
-  torch.testing.assert_close(rollout(3, repeat=True), expected)
+  for _ in range(20):
+    tick(0,0)
+    torch.testing.assert_close(state.reference, source)
+    assert (state.progress == 0).all()
+    torch.testing.assert_close(stopping_reward(env), torch.zeros(4))
+  tick()
+  tick()
+  assert (state.landing_credit == 0).all()
+  torch.testing.assert_close(stopping_reward(env), torch.zeros(4))
+  # Ordinary supported steps still progress after an unsupported hop.
+  for _ in range(16):
+    tick(0,1)
+  tick()
+  tick()
+  assert (state.credited_progress[:,0] == 1).all()
+  assert (state.credited_progress[:,1] == 0).all()
+
+
+@torch.inference_mode()
+def test_flight_freezes_existing_partial_blend(env):
+  _, state, _, tick = prepare_blend(env, False)
+  tick()
+  tick()
+  for _ in range(4):
+    tick(0,1)
+  before = state.reference.clone()
+  progress = state.progress.clone()
+  assert (progress[:,0] > 0).all()
+  for _ in range(8):
+    tick(0,0)
+    torch.testing.assert_close(state.reference, before)
+    torch.testing.assert_close(state.progress, progress)
+
+
+@torch.inference_mode()
+@pytest.mark.parametrize("name", ["track_linear_velocity", "track_angular_velocity",
+                                 "leg_joint_vel_penalty", "base_drift_penalty"])
+@pytest.mark.parametrize("mode", [1, 2])
+def test_stopping_retains_original_stabilization(env, monkeypatch, name, mode):
+  _, state, _, _ = prepare_blend(env, False)
+  state.mode[:] = mode
+  term = env.reward_manager.get_term_cfg(name)
+  monkeypatch.setattr(state, 'advance', lambda: None)
+  data = env.scene['robot'].data
+  monkeypatch.setattr(type(data), 'root_link_lin_vel_b',
+                      property(lambda _: torch.full((4, 3), .3)))
+  monkeypatch.setattr(type(data), 'root_link_ang_vel_b',
+                      property(lambda _: torch.full((4, 3), .2)))
+  params = {k:v for k,v in term.params.items() if k not in ('original_func','transition_kind')}
+  expected = term.func.func(env, **params)
+  torch.testing.assert_close(term.func(env, **term.params), expected)
+
+
+@torch.inference_mode()
+@pytest.mark.parametrize("mode", [1, 2])
+def test_stopping_landing_bonus_is_zero_even_after_deadline(env, monkeypatch, mode):
+  from src.tasks.locomanipulation.mdp.stopping import stopping_reward
+  _, state, _, _ = prepare_blend(env, False)
+  state.mode[:] = mode
+  state.landing_credit[:] = 1
+  state.shaping[:] = .7
+  monkeypatch.setattr(state, 'advance', lambda: None)
+  monkeypatch.setattr(state, 'geometry', lambda destination=False: (
+    torch.zeros(4, 2, 3), torch.zeros(4, dtype=torch.long)))
+  torch.testing.assert_close(stopping_reward(env),
+                            state.command.cfg.shaping_weight * state.shaping)
+
+
+@torch.inference_mode()
+def test_reversal_without_reference_motion_earns_no_credit(env):
+  cmd, state, _, tick = prepare_blend(env, True)
+  source = state.reference.clone()
+  cmd.vel_command_b[:] = 0
+  state.reconcile()
+  torch.testing.assert_close(state.reference, source)
+  assert (state.progress == 1).all() and (state.credited_progress == 1).all()
+  for pair in [(0,1)]*16 + [(1,1)]*2 + [(1,0)]*16 + [(1,1)]*2:
+    tick(*pair)
+    assert not state.landing_credit.any()
+    torch.testing.assert_close(state.reference, source)
+
+
+@torch.inference_mode()
+def test_reversal_only_restarts_legs_with_changed_references(env):
+  cmd, state, _, tick = prepare_blend(env, True)
+  for _ in range(4):
+    tick(0,1)
+  tick()
+  tick()
+  assert (state.blend[:,0] > 0).all() and (state.blend[:,1] == 0).all()
+  cmd.vel_command_b[:] = 0
+  state.reconcile()
+  assert (state.progress[:,0] == 0).all()
+  assert (state.progress[:,1] == 1).all()
+  assert (state.credited_progress[:,1] == 1).all()
+
+
+@torch.inference_mode()
+def test_hop_before_landing_cannot_cash_out_previously_supported_progress(env):
+  _, state, _, tick = prepare_blend(env, False)
+  tick()
+  tick()
+  for _ in range(4):
+    tick(0,1)
+  assert (state.progress[:,0] > 0).all()
+  tick(0,0)
+  tick(0,0)
+  tick()
+  tick()
+  assert not state.landing_credit.any()
+  assert (state.credited_progress == 0).all()
+  # Progress/reference are retained; a later supported landing can earn credit.
+  for _ in range(16):
+    tick(0,1)
+  tick()
+  tick()
+  assert (state.landing_credit[:,0] > 0).all()
+  assert (state.credited_progress[:,0] == 1).all()
