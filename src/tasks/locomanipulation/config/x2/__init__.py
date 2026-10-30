@@ -8,6 +8,7 @@ from .env_cfgs import (
   agibot_x2_locomanipulation_carry_finetune_flat_env_cfg,
   agibot_x2_locomanipulation_flat_env_cfg,
   agibot_x2_locomanipulation_rough_env_cfg,
+  agibot_x2_locomanipulation_transition_flat_env_cfg,
 )
 from .rl_cfg import agibot_x2_locomanipulation_ppo_runner_cfg
 
@@ -33,4 +34,12 @@ register_mjlab_task(
   play_env_cfg=agibot_x2_locomanipulation_carry_finetune_flat_env_cfg(play=True),
   rl_cfg=agibot_x2_locomanipulation_ppo_runner_cfg(),
   runner_cls=X2_CarryFinetuneOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Agibot-X2-Locomanipulation-Transition-Flat",
+  env_cfg=agibot_x2_locomanipulation_transition_flat_env_cfg(),
+  play_env_cfg=agibot_x2_locomanipulation_transition_flat_env_cfg(play=True),
+  rl_cfg=agibot_x2_locomanipulation_ppo_runner_cfg(),
+  runner_cls=X2_LocomanipulationOnPolicyRunner,
 )

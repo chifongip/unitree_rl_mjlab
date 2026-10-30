@@ -656,6 +656,7 @@ class variable_posture:
     standing_height_postures: dict | None = None,
     nominal_height: float = 0.785,
     walking_height_postures: dict | None = None,
+    joint_mask: torch.Tensor | None = None,
   ) -> torch.Tensor:
     del std_standing, std_walking, std_running  # Unused.
     del base_height_command_name, standing_height_postures, nominal_height  # Used in __init__.
@@ -708,6 +709,8 @@ class variable_posture:
 
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
+    if joint_mask is not None:
+      error_squared = error_squared * joint_mask
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
 
 

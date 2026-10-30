@@ -570,3 +570,11 @@ def agibot_x2_locomanipulation_carry_finetune_flat_env_cfg(
     cfg.curriculum["force_curriculum"].params["start_step"] = 0
 
   return cfg
+
+
+def agibot_x2_locomanipulation_transition_flat_env_cfg(play: bool = False):
+  """Add stand/walk transition practice to flat X2 locomanipulation."""
+  from src.tasks.locomanipulation.mdp.stopping import configure_stop_training
+  cfg = agibot_x2_locomanipulation_flat_env_cfg(play=play)
+  configure_stop_training(cfg, play=play)
+  return cfg

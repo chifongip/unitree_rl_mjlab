@@ -420,8 +420,26 @@ def _get_term_mirror_23dof(term_name: str) -> _TermMirror | None:
   return None
 
 
+class _TransitionFeetMirror(_TermMirror):
+  def apply(self, segment, _ctx, history_length=1):
+    values = segment.reshape(*segment.shape[:-1], history_length, 3)
+    values[..., 1:] = values[..., [2, 1]]
+
+
+class _StopTransitionMirror(_TermMirror):
+  """Invariant mode/time, swap feet and reflect signed lateral/yaw errors."""
+  def apply(self, segment, _ctx, history_length=1):
+    values = segment.reshape(*segment.shape[:-1], history_length, 10)
+    errors = values[..., 4:].reshape(*values.shape[:-1], 2, 3)
+    errors[:] = errors[..., [1, 0], :] * errors.new_tensor([1., -1., -1.])
+
+
 def _get_term_mirror_x2(term_name: str) -> _TermMirror | None:
   """Return the mirror transform for an X2 observation term, or None for identity."""
+  if term_name == "transition_feet":
+    return _TransitionFeetMirror()
+  if term_name == "stop_transition":
+    return _StopTransitionMirror()
   # Simple sign-flip terms.
   if term_name == "base_ang_vel":
     return _NegateIndices((0, 2))
