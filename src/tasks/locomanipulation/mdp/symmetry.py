@@ -420,6 +420,13 @@ def _get_term_mirror_23dof(term_name: str) -> _TermMirror | None:
   return None
 
 
+class _TransitionReferenceMirror(_TermMirror):
+  """Absolute per-leg blend coordinates swap without sign changes."""
+  def apply(self, segment, _ctx, history_length=1):
+    values = segment.reshape(*segment.shape[:-1], history_length, 2)
+    values[:] = values[..., [1, 0]]
+
+
 class _TransitionFeetMirror(_TermMirror):
   def apply(self, segment, _ctx, history_length=1):
     values = segment.reshape(*segment.shape[:-1], history_length, 3)
@@ -436,6 +443,8 @@ class _StopTransitionMirror(_TermMirror):
 
 def _get_term_mirror_x2(term_name: str) -> _TermMirror | None:
   """Return the mirror transform for an X2 observation term, or None for identity."""
+  if term_name == "transition_reference":
+    return _TransitionReferenceMirror()
   if term_name == "transition_feet":
     return _TransitionFeetMirror()
   if term_name == "stop_transition":

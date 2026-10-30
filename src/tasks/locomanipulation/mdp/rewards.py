@@ -656,7 +656,7 @@ class variable_posture:
     standing_height_postures: dict | None = None,
     nominal_height: float = 0.785,
     walking_height_postures: dict | None = None,
-    joint_mask: torch.Tensor | None = None,
+    joint_reference: torch.Tensor | None = None,
   ) -> torch.Tensor:
     del std_standing, std_walking, std_running  # Unused.
     del base_height_command_name, standing_height_postures, nominal_height  # Used in __init__.
@@ -707,10 +707,10 @@ class variable_posture:
         desired_joint_pos,
       )
 
+    if joint_reference is not None:
+      desired_joint_pos = joint_reference
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
-    if joint_mask is not None:
-      error_squared = error_squared * joint_mask
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
 
 
@@ -772,6 +772,7 @@ class stand_still:
     std: float = 0.05,
     force_event_name: str | None = None,
     force_std_scale: float = 5.0,
+    joint_reference: torch.Tensor | None = None,
   ) -> torch.Tensor:
     del standing_height_postures, base_height_command_name, std, force_event_name, force_std_scale
 
@@ -788,6 +789,8 @@ class stand_still:
     else:
       target = self.default_joint_pos[:, asset_cfg.joint_ids]
 
+    if joint_reference is not None:
+      target = joint_reference
     diff_angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - target
     error_squared = torch.square(diff_angle)
     penalty = 1.0 - torch.exp(-torch.mean(error_squared / (self._std**2), dim=1))
