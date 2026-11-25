@@ -70,7 +70,7 @@ class X2_LocomanipulationOnPolicyRunner(LocomanipulationOnPolicyRunner):
   }
 
 
-class X2_CarryFinetuneOnPolicyRunner(X2_LocomanipulationOnPolicyRunner):
+class CarryFinetuneRunnerMixin:
   """Keep the carry load ramp relative to the fine-tune across resumes."""
 
   def _force_curriculum_cfg(self) -> CurriculumTermCfg | None:
@@ -106,3 +106,17 @@ class X2_CarryFinetuneOnPolicyRunner(X2_LocomanipulationOnPolicyRunner):
         "carry_force_start_step": force_cfg.params["start_step"],
       }
     super().save(path, infos)
+
+
+class X2_CarryFinetuneOnPolicyRunner(CarryFinetuneRunnerMixin, X2_LocomanipulationOnPolicyRunner):
+  pass
+
+
+class G1CarryFinetuneOnPolicyRunner(CarryFinetuneRunnerMixin, LocomanipulationOnPolicyRunner):
+  pass
+
+
+class G1_23DOF_CarryFinetuneOnPolicyRunner(
+  CarryFinetuneRunnerMixin, G1_23DOF_LocomanipulationOnPolicyRunner,
+):
+  pass

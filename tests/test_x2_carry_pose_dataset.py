@@ -155,3 +155,71 @@ def test_level_grasp_heading_does_not_tilt_palms():
     np.testing.assert_allclose(rotations[:, :, 0], [[0, 0, 1], [0, 0, 1]], atol=1e-15)
     np.testing.assert_allclose(rotations[:, 2, 2], 0, atol=1e-15)
     np.testing.assert_allclose(rotations[0], rotations[1])
+
+
+@pytest.mark.parametrize("robot,joint_count,hand", [
+  ("x2", 29, "left_wrist_roll_link"),
+  ("g1", 29, "left_wrist_yaw_link"),
+  ("g1_23dof", 23, "left_wrist_roll_rubber_hand"),
+])
+def test_generator_selects_robot_reference(monkeypatch, robot, joint_count, hand):
+  calls = []
+  monkeypatch.setattr(generator, "generate_dataset", lambda *args: calls.append(args))
+  monkeypatch.setattr(sys, "argv", [str(SCRIPT_PATH), "--robot", robot])
+
+  generator.main()
+
+  (args, reference), = calls
+  assert reference.joint_count == joint_count
+  assert reference.hands[0] == hand
+  assert tuple(reference.pose) == reference.arm_names
+  assert args.xml == reference.xml
+  assert args.output == reference.dataset
+
+
+def test_generator_respects_explicit_reference_overrides(monkeypatch, tmp_path):
+  import json
+
+  xml = tmp_path / "custom.xml"
+  output = tmp_path / "custom.pkl"
+  pose_file = tmp_path / "custom.json"
+  pose = generator.DEFAULT_CARRY_POSE.copy()
+  pose["left_elbow_joint"] += 0.1
+  pose_file.write_text(json.dumps(pose))
+  calls = []
+  monkeypatch.setattr(generator, "generate_dataset", lambda *args: calls.append(args))
+  monkeypatch.setattr(sys, "argv", [
+    str(SCRIPT_PATH), "--xml", str(xml), "--output", str(output),
+    "--base-pose-json", str(pose_file),
+  ])
+
+  generator.main()
+
+  (args, reference), = calls
+  assert args.xml == xml
+  assert args.output == output
+  assert generator.load_base_pose(args.base_pose_json, reference.arm_names, reference.pose) == pose
+
+
+def test_x2_carry_pose_shared_with_playback_and_evaluation():
+  from scripts.eval import POSE_PRESETS
+  from scripts.play import PREDEFINED_POSES_X2
+
+  reference = generator.CARRY_REFERENCES["x2"]
+  assert reference.pose == PREDEFINED_POSES_X2[3] == POSE_PRESETS["x2_carry"]
+
+
+def test_generator_rejects_mismatched_arm_column_order(monkeypatch, tmp_path):
+  from dataclasses import replace
+
+  reference = generator.CARRY_REFERENCES["x2"]
+  monkeypatch.setitem(
+    generator.CARRY_REFERENCES, "x2",
+    replace(reference, motion_dof_indices=tuple(reversed(reference.motion_dof_indices))),
+  )
+  output = tmp_path / "invalid.pkl"
+  monkeypatch.setattr(sys, "argv", [str(SCRIPT_PATH), "--output", str(output)])
+
+  with pytest.raises(ValueError, match="arm joint order"):
+    generator.main()
+  assert not output.exists()

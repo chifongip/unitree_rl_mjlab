@@ -47,8 +47,10 @@ src/tasks/locomanipulation/
 |-----------|-------|---------|--------|
 | `Unitree-G1-Locomanipulation-Rough` | G1 29-DOF | Rough | `LocomanipulationOnPolicyRunner` |
 | `Unitree-G1-Locomanipulation-Flat` | G1 29-DOF | Flat | `LocomanipulationOnPolicyRunner` |
+| `Unitree-G1-Locomanipulation-Carry-Finetune-Flat` | G1 29-DOF | Flat | `G1CarryFinetuneOnPolicyRunner` |
 | `Unitree-G1-23Dof-Locomanipulation-Rough` | G1 23-DOF | Rough | `G1_23DOF_LocomanipulationOnPolicyRunner` |
 | `Unitree-G1-23Dof-Locomanipulation-Flat` | G1 23-DOF | Flat | `G1_23DOF_LocomanipulationOnPolicyRunner` |
+| `Unitree-G1-23Dof-Locomanipulation-Carry-Finetune-Flat` | G1 23-DOF | Flat | `G1_23DOF_CarryFinetuneOnPolicyRunner` |
 | `Agibot-X2-Locomanipulation-Rough` | Agibot X2 | Rough | `X2_LocomanipulationOnPolicyRunner` |
 | `Agibot-X2-Locomanipulation-Flat` | Agibot X2 | Flat | `X2_LocomanipulationOnPolicyRunner` |
 | `Agibot-X2-Locomanipulation-Carry-Finetune-Flat` | Agibot X2 | Flat | `X2_CarryFinetuneOnPolicyRunner` |
@@ -60,7 +62,7 @@ src/tasks/locomanipulation/
 The policy outputs actions for lower-body joints + waist. Upper-body joints are controlled by `UpperBodyMotionAction`, which reads from motion data:
 
 - **`pose_only=False`**: Plays back motion clips frame-by-frame for dynamic upper-body motion.
-- **`pose_only=True`**: Samples a random frame at episode reset and holds it; the X2 carry fine-tune uses this mode.
+- **`pose_only=True`**: Samples a random frame at episode reset and holds it. All registered G1 and X2 locomanipulation tasks use this mode.
 
 The `default_pose_ratio` curriculum gradually transitions from HOME_KEYFRAME to diverse motion poses during training.
 
@@ -129,9 +131,9 @@ When velocity command magnitude < 0.1, three rewards reinforce stable stance:
 | `waist_yaw_scale` | Waist yaw command range | Expands from nominal-only to full range |
 | `terrain_levels` | Terrain difficulty | Velocity-based advancement |
 
-### X2 Carry-Pose Dataset Generator
+### Carry-Pose Dataset Generator
 
-Generate static carry poses with bilateral endpoint IK. The embedded reference pose defines the initial wrist endpoints, but does not restrict the arm joint search. Endpoint offsets are relative to each reference endpoint in the `torso_link` frame: +X is forward, +Y is left, and +Z is up. Both wrists must stay in front and on their respective sides; their X and Z coordinates are kept parallel, while their Y positions and orientations may differ. Unreachable or self-penetrating candidates are skipped.
+Generate static carry poses with bilateral endpoint IK. The robot reference pose defines the initial wrist endpoints. IK searches within the model’s arm joint limits. Endpoint offsets are relative to each reference endpoint in the `torso_link` frame: +X is forward, +Y is left, and +Z is up. Both wrists must stay in front and on their respective sides; their X and Z coordinates are kept parallel, while their Y positions and orientations may differ. Unreachable or self-penetrating candidates are skipped.
 
 ```bash
 python scripts/generate_x2_carry_pose_dataset.py \
@@ -139,7 +141,7 @@ python scripts/generate_x2_carry_pose_dataset.py \
     --output src/assets/data/x2/bones_seed/carry_poses_x2.pkl
 ```
 
-The default endpoint offset range is ±0.5 m per axis. Use `--endpoint-offset-lower X Y Z` and `--endpoint-offset-upper X Y Z` together to set separate bounds relative to the reference endpoints; `--base-pose-json path/to/pose.json` replaces the embedded 14-joint reference pose. If fewer than the requested number of clips are accepted, increase `--num-candidates`.
+The default endpoint offset range is ±0.5 m per axis. Use `--endpoint-offset-lower X Y Z` and `--endpoint-offset-upper X Y Z` together to set separate bounds relative to the reference endpoints; `--base-pose-json path/to/pose.json` replaces the selected robot’s reference pose. If fewer than the requested number of clips are accepted, increase `--num-candidates`.
 
 Inspect a saved dataset without rerunning IK or overwriting it:
 
@@ -149,7 +151,17 @@ python scripts/generate_x2_carry_pose_dataset.py \
     --playback-max-poses 32 --playback-once
 ```
 
-Use `--playback` during generation for immediate visual inspection. The dataset is a dictionary of 29-DOF static clips; the X2 carry task reads its 14 arm columns from the output path above.
+Use `--playback` during generation for immediate visual inspection. Each carry task reads the arm columns from its robot’s static clips.
+
+To preview the G1 reference grasp, play the first clip from the saved dataset:
+
+```bash
+python scripts/generate_x2_carry_pose_dataset.py --robot g1 \
+    --playback-file src/assets/data/g1/bones_seed/carry_poses_g1.pkl \
+    --playback-max-poses 1
+```
+
+For G1 23-DOF, use `--robot g1_23dof` and `carry_poses_g1_23dof.pkl`. Increase the pose limit to see generated variations.
 
 ## Training
 
@@ -191,7 +203,7 @@ python scripts/train.py Unitree-G1-Locomanipulation-Flat \
     --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
-### X2 Carry-Pose Post-Training
+### Carry-Pose Post-Training
 
 First generate the carry-pose dataset at the path above. Then resume from a stable `Agibot-X2-Locomanipulation-Flat` walking checkpoint using the dedicated carry task. Replace `YOUR_WALKING_RUN` and the checkpoint filename with the actual run directory and file under `logs/rsl_rl/x2_locomanipulation/`:
 
@@ -204,6 +216,8 @@ python scripts/train.py Agibot-X2-Locomanipulation-Carry-Finetune-Flat \
     --agent.run-name=carry_finetune \
     --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
+
+For either G1 variant, use the matching Carry-Finetune-Flat task from the table and a Flat checkpoint from the same variant. The repository includes both G1 carry datasets.
 
 `--agent.max-iterations=2000` requests 2,000 **additional** updates after the loaded checkpoint. The carry task holds one sampled pose per episode (`pose_only=True`), with this expected training mixture:
 
@@ -556,5 +570,5 @@ X2_GAIN_PRESETS = {
 | `scripts/export_onnx.py` | ONNX export script |
 | `scripts/compute_height_postures.py` | IK posture computation |
 | `scripts/convert_bones_seed.py` | BONES-SEED CSV to pkl conversion |
-| `scripts/generate_x2_carry_pose_dataset.py` | X2 carry-pose IK generation and file playback |
+| `scripts/generate_x2_carry_pose_dataset.py` | G1 and X2 carry-pose IK generation and file playback |
 | `scripts/check_motion_collisions.py` | Collision checking/cleaning |

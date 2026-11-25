@@ -43,6 +43,8 @@ from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.torch import configure_torch_backends
 
+from src.tasks.locomanipulation.config.x2.reference import X2_CARRY_POSE
+
 
 # ---------------------------------------------------------------------------
 # Upper-body pose presets (values in radians).
@@ -94,22 +96,7 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_roll_joint": 0.0,
     },
-    "x2_carry": {
-        "left_shoulder_pitch_joint": -0.081,
-        "left_shoulder_roll_joint": 0.026,
-        "left_shoulder_yaw_joint": -0.049,
-        "left_elbow_joint": -2.188,
-        "left_wrist_yaw_joint": 0.238,
-        "left_wrist_pitch_joint": 0.326,
-        "left_wrist_roll_joint": 0.215,
-        "right_shoulder_pitch_joint": -0.081,
-        "right_shoulder_roll_joint": -0.026,
-        "right_shoulder_yaw_joint": 0.049,
-        "right_elbow_joint": -2.188,
-        "right_wrist_yaw_joint": -0.238,
-        "right_wrist_pitch_joint": 0.326,
-        "right_wrist_roll_joint": -0.215,
-    },
+    "x2_carry": dict(X2_CARRY_POSE),
 }
 
 # ---------------------------------------------------------------------------

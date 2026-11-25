@@ -10,12 +10,21 @@ from src.tasks.locomanipulation.config.x2.env_cfgs import (
 )
 from src.tasks.locomanipulation.mdp.curriculums import force_scale_staged
 from src.tasks.locomanipulation.rl.runner import (
+  G1CarryFinetuneOnPolicyRunner,
+  G1_23DOF_CarryFinetuneOnPolicyRunner,
   X2_CarryFinetuneOnPolicyRunner,
   X2_LocomanipulationOnPolicyRunner,
 )
 
 
-def _fake_runner(step: int):
+CARRY_RUNNERS = (
+  X2_CarryFinetuneOnPolicyRunner,
+  G1CarryFinetuneOnPolicyRunner,
+  G1_23DOF_CarryFinetuneOnPolicyRunner,
+)
+
+
+def _fake_runner(step: int, runner_cls=X2_CarryFinetuneOnPolicyRunner):
   event_cfg = SimpleNamespace(params={"force_scale": 0.0})
   stages = [
     {"step": 0, "scale": 0.0},
@@ -32,7 +41,7 @@ def _fake_runner(step: int):
     event_manager=SimpleNamespace(get_term_cfg=lambda name: event_cfg),
     curriculum_manager=SimpleNamespace(get_term_cfg=lambda name: force_cfg),
   )
-  runner = object.__new__(X2_CarryFinetuneOnPolicyRunner)
+  runner = object.__new__(runner_cls)
   runner.env = SimpleNamespace(unwrapped=env)
   return runner, env, force_cfg, event_cfg
 
@@ -49,14 +58,15 @@ def test_carry_checkpoint_load_without_training_curriculum(monkeypatch, manager)
   assert runner.load("carry.pt", load_cfg={"actor": True}) is infos
 
 
-def test_carry_force_ramp_starts_at_loaded_walking_step(monkeypatch):
-  runner, env, force_cfg, event_cfg = _fake_runner(step=0)
+@pytest.mark.parametrize("runner_cls", CARRY_RUNNERS)
+def test_carry_force_ramp_starts_at_loaded_walking_step(monkeypatch, runner_cls):
+  runner, env, force_cfg, event_cfg = _fake_runner(step=0, runner_cls=runner_cls)
 
   def load_checkpoint(self, path, load_cfg, strict, map_location):
     env.common_step_counter = 240_000
     return {"env_state": {"common_step_counter": 240_000}}
 
-  monkeypatch.setattr(X2_LocomanipulationOnPolicyRunner, "load", load_checkpoint)
+  monkeypatch.setattr(runner_cls.__bases__[1], "load", load_checkpoint)
   runner.load("walking.pt")
 
   assert force_cfg.params["start_step"] == 240_000
@@ -67,8 +77,9 @@ def test_carry_force_ramp_starts_at_loaded_walking_step(monkeypatch):
 
 
 @pytest.mark.parametrize("payload", [None, {"mass_range_kg": (0., 6.)}])
-def test_carry_force_ramp_survives_carry_checkpoint(monkeypatch, payload):
-  runner, env, force_cfg, event_cfg = _fake_runner(step=0)
+@pytest.mark.parametrize("runner_cls", CARRY_RUNNERS)
+def test_carry_force_ramp_survives_carry_checkpoint(monkeypatch, payload, runner_cls):
+  runner, env, force_cfg, event_cfg = _fake_runner(step=0, runner_cls=runner_cls)
   if payload is not None:
     event_cfg.params["payload"] = payload
 
@@ -81,8 +92,8 @@ def test_carry_force_ramp_survives_carry_checkpoint(monkeypatch, payload):
   def save_checkpoint(self, path, infos):
     saved_infos.update(infos)
 
-  monkeypatch.setattr(X2_LocomanipulationOnPolicyRunner, "load", load_checkpoint)
-  monkeypatch.setattr(X2_LocomanipulationOnPolicyRunner, "save", save_checkpoint)
+  monkeypatch.setattr(runner_cls.__bases__[1], "load", load_checkpoint)
+  monkeypatch.setattr(runner_cls.__bases__[1], "save", save_checkpoint)
   runner.load("carry.pt")
   runner.save("next.pt")
 

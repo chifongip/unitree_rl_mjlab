@@ -1,4 +1,6 @@
 from .runner import (
+  G1CarryFinetuneOnPolicyRunner as G1CarryFinetuneOnPolicyRunner,
+  G1_23DOF_CarryFinetuneOnPolicyRunner as G1_23DOF_CarryFinetuneOnPolicyRunner,
   G1_23DOF_LocomanipulationOnPolicyRunner as G1_23DOF_LocomanipulationOnPolicyRunner,
   LocomanipulationOnPolicyRunner as LocomanipulationOnPolicyRunner,
   X2_CarryFinetuneOnPolicyRunner as X2_CarryFinetuneOnPolicyRunner,

@@ -246,3 +246,47 @@ def test_training_resume_respects_explicitly_disabled_saved_observer(tmp_path):
   cfg = TrainConfig(env=env, agent=agibot_x2_locomanipulation_ppo_runner_cfg())
   _restore_training_torque_compensation(cfg, tmp_path / "model_1.pt")
   assert env.actions["upper_body_motion"].observer is None
+
+
+@pytest.mark.parametrize("task", [
+  "Agibot-X2-Locomanipulation-Flat",
+  "Unitree-G1-Locomanipulation-Flat",
+  "Unitree-G1-23Dof-Locomanipulation-Flat",
+])
+def test_shared_restore_validates_before_updating_config(task):
+  from mjlab.tasks.registry import load_env_cfg
+  from scripts.play import _restore_torque_compensation
+
+  cfg = load_env_cfg(task)
+  action = cfg.actions["upper_body_motion"]
+  articulation = cfg.scene.entities["robot"].articulation
+  original_observer = action.observer
+  original_actuators = articulation.actuators
+
+  overrides = asdict(cfg)
+  observer = overrides["actions"]["upper_body_motion"]["observer"]
+  saved_articulation = overrides["scene"]["entities"]["robot"]["articulation"]
+  saved_actuators = list(saved_articulation["actuators"])
+  saved_articulation["actuators"] = saved_actuators
+  observer["mode"] = "SHADOW"
+
+  names = observer["joint_names"]
+  observer["joint_names"] = (*names[:-1], names[0])
+  with pytest.raises(ValueError, match="joints do not match"):
+    _restore_torque_compensation(cfg, overrides)
+  observer["joint_names"] = names
+
+  arm = next(a for a in saved_actuators if any("wrist_roll" in p for p in a["target_names_expr"]))
+  effort_limit = arm.pop("effort_limit")
+  with pytest.raises(ValueError, match="actuator is incomplete"):
+    _restore_torque_compensation(cfg, overrides)
+  assert action.observer is original_observer
+  assert articulation.actuators is original_actuators
+
+  arm["effort_limit"] = effort_limit
+  for actuator in saved_actuators:
+    actuator["transmission_type"] = [actuator["transmission_type"].value]
+  _restore_torque_compensation(cfg, overrides)
+  assert action.observer.mode == "SHADOW"
+  assert tuple(map(type, articulation.actuators)) == tuple(map(type, original_actuators))
+  assert articulation.actuators == original_actuators

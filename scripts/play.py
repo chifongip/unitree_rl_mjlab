@@ -24,6 +24,8 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
+from src.tasks.locomanipulation.config.x2.reference import X2_CARRY_POSE
+
 
 # Predefined upper body poses for keyboard switching (F8-F11).
 # Each dict maps joint names to radians. Empty dict = model defaults.
@@ -69,7 +71,7 @@ PREDEFINED_POSES: list[dict[str, float]] = [
   },
 ]
 
-# X2 predefined poses — all 14 arm joints (7 per arm). Values are placeholders.
+# X2 predefined poses for the keyboard and welded-box playback.
 PREDEFINED_POSES_X2: list[dict[str, float]] = [
   {
     # F1: default pose
@@ -122,23 +124,7 @@ PREDEFINED_POSES_X2: list[dict[str, float]] = [
     "right_wrist_pitch_joint": 0.0,
     "right_wrist_roll_joint": 0.0,
   },
-  {
-    # F4: Carry-pose
-    "left_shoulder_pitch_joint": -0.081,
-    "left_shoulder_roll_joint": 0.026,
-    "left_shoulder_yaw_joint": -0.049,
-    "left_elbow_joint": -2.188,
-    "left_wrist_yaw_joint": 0.238,
-    "left_wrist_pitch_joint": 0.326,
-    "left_wrist_roll_joint": 0.215,
-    "right_shoulder_pitch_joint": -0.081,
-    "right_shoulder_roll_joint": -0.026,
-    "right_shoulder_yaw_joint": 0.049,
-    "right_elbow_joint": -2.188,
-    "right_wrist_yaw_joint": -0.238,
-    "right_wrist_pitch_joint": 0.326,
-    "right_wrist_roll_joint": -0.215,
-  },
+  dict(X2_CARRY_POSE),
 ]
 
 
@@ -481,7 +467,15 @@ def _restore_torque_compensation(env_cfg, overrides: dict | None) -> str | None:
     restore_x2_torque_compensation,
   )
 
-  restore_x2_torque_compensation(env_cfg, saved_observer, saved_actuators)
+  from src.assets.robots.unitree_g1.unitree_actuators import UnitreeActuatorCfg
+
+  actuators = env_cfg.scene.entities["robot"].articulation.actuators
+  if any(isinstance(actuator, UnitreeActuatorCfg) for actuator in actuators):
+    from src.tasks.locomanipulation.config.g1.torque_compensation import restore_g1_torque_compensation
+
+    restore_g1_torque_compensation(env_cfg, saved_observer, saved_actuators)
+  else:
+    restore_x2_torque_compensation(env_cfg, saved_observer, saved_actuators)
   return (
     f"restored {saved_observer['algorithm']} / {saved_observer['mode']} "
     "and arm actuator settings"

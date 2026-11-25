@@ -407,6 +407,7 @@ class UpperBodyMotionAction(ActionTerm):
   def _initialize_observer(self, cfg: JointObserverCfg) -> None:
     """Resolve explicit joint-name order and controller-known actuator settings."""
     from src.assets.robots.agibot_x2.compensated_actuator import CompensatedPositionActuator
+    from src.assets.robots.unitree_g1.unitree_actuators import UnitreeActuator
 
     joint_ids = [self._entity.joint_names.index(name) for name in cfg.joint_names]
     if any(j not in self._joint_ids for j in joint_ids):
@@ -427,7 +428,9 @@ class UpperBodyMotionAction(ActionTerm):
         a for a in self._entity.actuators
         if a.transmission_type == TransmissionType.JOINT and name in a.target_names
       ]
-      if len(matching) != 1 or not isinstance(matching[0], CompensatedPositionActuator):
+      if len(matching) != 1 or not isinstance(
+        matching[0], (CompensatedPositionActuator, UnitreeActuator)
+      ):
         raise ValueError(f"Observer joint {name} requires a compensated position actuator")
       actuator = matching[0].cfg
       if actuator.effort_limit is None:

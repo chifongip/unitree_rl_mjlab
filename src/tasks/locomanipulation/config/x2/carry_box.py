@@ -14,6 +14,8 @@ from mjlab.managers.event_manager import EventTermCfg, RecomputeLevel, requires_
 from mjlab.managers.manager_base import ManagerTermBase
 from mjlab.utils.lab_api.math import quat_apply, quat_mul
 
+from .reference import X2_CARRY_REFERENCE
+
 
 def _box_spec(mass: float, size: tuple[float, float, float]) -> mujoco.MjSpec:
   spec = mujoco.MjSpec()
@@ -70,7 +72,7 @@ def add_carry_box(cfg, pose: dict[str, float], mass: float,
   )
   cfg.actions["upper_body_motion"].fixed_upper_body_pose = dict(pose)
 
-  hands = ("left_wrist_roll_link", "right_wrist_roll_link")
+  hands = X2_CARRY_REFERENCE.hands
   positions = [data.xpos[model.body(name).id].copy() for name in hands]
   # Hand capsules extend from local z=-0.08 to -0.14 beyond the roll link.
   palms = [
@@ -142,7 +144,7 @@ def add_carry_box(cfg, pose: dict[str, float], mass: float,
 
 def _sampled_box_geometry(model, data, depth: float, height: float):
   """Fit a level, heading-aligned box between the current palm centers."""
-  hands = [model.body(f"{side}_wrist_roll_link").id for side in ("left", "right")]
+  hands = [model.body(hand).id for hand in X2_CARRY_REFERENCE.hands]
   wrist_rotations = data.xmat[hands].reshape(2, 3, 3)
   palms = data.xpos[hands] + wrist_rotations @ np.array([0, 0, -0.11])
   lateral = palms[0] - palms[1]
@@ -201,8 +203,9 @@ class SampledCarryBox(ManagerTermBase):
     compiled = env.sim.mj_model
     self.geom_id = compiled.geom("carry_box/box_geom").id
     self.body_id = compiled.body("carry_box/box").id
-    self.weld_ids = [compiled.equality(f"carry_box_{side}_wrist_roll_link").id
-                     for side in ("left", "right")]
+    self.weld_ids = [
+      compiled.equality(f"carry_box_{hand}").id for hand in X2_CARRY_REFERENCE.hands
+    ]
 
   def __call__(self, env, env_ids, **kwargs):
     # Reset events run before arm sampling. EventManager.reset calls our reset

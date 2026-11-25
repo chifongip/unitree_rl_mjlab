@@ -122,16 +122,22 @@ def distribute_hand_wrench(
 def box_rotation(
   hands: torch.Tensor,
   hand_quats: torch.Tensor,
+  hand_up_local: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-  """Infer a right-handed box frame from the hand span and average wrist +X up.
+  """Infer a right-handed box frame from the hand span and average grasp up.
 
-  The X2 carry datasets define wrist +X as the top of a side grasp. Projecting
-  the averaged up direction perpendicular to the span reconciles the two grips.
+  The default up direction is wrist-local +X, as used by X2. Other grasps
+  supply their own local up directions for the two hands. Projecting the
+  average perpendicular to the span reconciles the two grips.
   """
   span = hands[:, 0] - hands[:, 1]
   separation = torch.linalg.vector_norm(span, dim=-1)
   axis_y = span / separation.clamp_min(1e-8).unsqueeze(-1)
-  hand_up = matrix_from_quat(hand_quats)[..., :, 0].mean(dim=1)
+  hand_rotations = matrix_from_quat(hand_quats)
+  hand_up = (
+    hand_rotations[..., :, 0] if hand_up_local is None
+    else (hand_rotations @ hand_up_local.to(hand_rotations)[..., None]).squeeze(-1)
+  ).mean(dim=1)
   up = hand_up - (hand_up * axis_y).sum(-1, keepdim=True) * axis_y
   up_length = torch.linalg.vector_norm(up, dim=-1)
   axis_z = up / up_length.clamp_min(1e-8).unsqueeze(-1)
@@ -214,6 +220,14 @@ class SlidingBoxForceEvent:
     self._body_names = asset_cfg.body_names
     if len(self._body_ids) != 2 or self._body_ids[0] == self._body_ids[1]:
       raise ValueError("Sliding payload requires two distinct ordered hand bodies")
+    self._hand_up_local = None
+    hand_up_local = cfg.params.get("hand_up_local")
+    if hand_up_local is not None:
+      axes = torch.as_tensor(hand_up_local, device=env.device, dtype=torch.float32)
+      if (axes.shape != (2, 3) or not torch.isfinite(axes).all()
+          or (axes.norm(dim=-1) <= 1e-8).any()):
+        raise ValueError("Carry grasp requires two finite nonzero local up vectors")
+      self._hand_up_local = torch.nn.functional.normalize(axes, dim=-1)
     self._params = validate_payload_params(cfg.params["payload"])
     torque_bounds = validate_torque_bounds(cfg.params.get("torque_bounds"))
     self._torque_estimator = None
@@ -352,8 +366,9 @@ class SlidingBoxForceEvent:
     body_frame: bool = False,
     upper_body_action_name: str | None = None,
     torque_bounds: dict | None = None,
+    hand_up_local: tuple[tuple[float, float, float], ...] | None = None,
   ) -> None:
-    del env, env_ids, asset_cfg, payload, torque_bounds
+    del env, env_ids, asset_cfg, payload, torque_bounds, hand_up_local
     if not math.isfinite(force_scale) or not 0 <= no_force_ratio <= 1:
       raise ValueError("Payload requires finite force_scale and no_force_ratio in [0, 1]")
     default_ratio, default_pose = self._get_default_pose_sampling(upper_body_action_name)
@@ -383,7 +398,7 @@ class SlidingBoxForceEvent:
     carry_ratio = _carry_no_force_ratio(default_ratio, no_force_ratio)
     hands = self._asset.data.body_com_pos_w[:, self._body_ids]
     hand_quats = self._asset.data.body_link_quat_w[:, self._body_ids]
-    rotation, separation, valid = box_rotation(hands, hand_quats)
+    rotation, separation, valid = box_rotation(hands, hand_quats, self._hand_up_local)
     valid &= separation >= self._params["min_hand_separation_m"]
     # The reduced floor-contact model requires an upright, nondegenerate grasp.
     valid &= rotation[:, 2, 2] > 0.1

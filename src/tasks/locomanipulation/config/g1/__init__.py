@@ -1,7 +1,11 @@
 from mjlab.tasks.registry import register_mjlab_task
-from src.tasks.locomanipulation.rl import LocomanipulationOnPolicyRunner
+from src.tasks.locomanipulation.rl import (
+  G1CarryFinetuneOnPolicyRunner,
+  LocomanipulationOnPolicyRunner,
+)
 
 from .env_cfgs import (
+  unitree_g1_locomanipulation_carry_finetune_flat_env_cfg,
   unitree_g1_locomanipulation_flat_env_cfg,
   unitree_g1_locomanipulation_rough_env_cfg,
 )
@@ -21,4 +25,12 @@ register_mjlab_task(
   play_env_cfg=unitree_g1_locomanipulation_flat_env_cfg(play=True),
   rl_cfg=unitree_g1_locomanipulation_ppo_runner_cfg(),
   runner_cls=LocomanipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Unitree-G1-Locomanipulation-Carry-Finetune-Flat",
+  env_cfg=unitree_g1_locomanipulation_carry_finetune_flat_env_cfg(),
+  play_env_cfg=unitree_g1_locomanipulation_carry_finetune_flat_env_cfg(play=True),
+  rl_cfg=unitree_g1_locomanipulation_ppo_runner_cfg(),
+  runner_cls=G1CarryFinetuneOnPolicyRunner,
 )

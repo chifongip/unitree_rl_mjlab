@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate X2 carry-pose clips by sampling arm endpoint poses and solving IK.
+"""Generate X2 or G1 carry-pose clips by sampling arm endpoint poses and solving IK.
 
 The supplied reference pose defines one endpoint pose for each arm. Each
 candidate samples a parallel pair of endpoint poses in the ``torso_link``
@@ -17,12 +17,12 @@ The tilted reference is omitted from the output; saved float32 poses are
 checked against ``--max-ground-tilt-deg`` as well as endpoint alignment limits.
 
 The reference pose is not a joint-space sampling bound. Generated poses may
-use the complete X2 arm joint ranges; only the model's joint limits and the
+use the complete robot arm joint ranges; only the model's joint limits and the
 final endpoint-target residual decide whether an IK result is retained.
 
 The output format is compatible with ``UpperBodyMotionAction``:
-``dict[str, {"dof": (frames, 29) float32, "fps": int}]``.  The action term
-selects the 14 arm columns from this 29-DOF data.
+``dict[str, {"dof": (frames, num_joints) float32, "fps": int}]``.  The action term
+selects the arm columns from the model-ordered data.
 
 Example:
   python scripts/generate_x2_carry_pose_dataset.py --num-poses 256 --output \
@@ -32,8 +32,13 @@ To inspect an existing dataset without generating new poses:
   python scripts/generate_x2_carry_pose_dataset.py --playback-file \
     src/assets/data/x2/bones_seed/carry_poses_x2.pkl --playback-once
 
-To use a measured carry pose instead of the embedded reference, save the 14 arm
+To use a measured carry pose instead of the embedded reference, save the robot’s arm
 joint values as a JSON object and pass ``--base-pose-json path/to/pose.json``.
+
+To regenerate the G1 training assets, use either ``--robot g1`` or
+``--robot g1_23dof`` with ``--num-poses 64 --translation-range 0.04
+--rotation-range-deg 5``. The smaller range retains usable orientation
+variation for the 23-DOF wrist geometry.
 """
 
 from __future__ import annotations
@@ -51,66 +56,38 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_XML = REPO_ROOT / "src/assets/robots/agibot_x2/xmls/x2_ultra_no_head.xml"
-DEFAULT_OUTPUT = REPO_ROOT / "src/assets/data/x2/bones_seed/carry_poses_x2.pkl"
-
-ARM_JOINT_NAMES = (
-  "left_shoulder_pitch_joint",
-  "left_shoulder_roll_joint",
-  "left_shoulder_yaw_joint",
-  "left_elbow_joint",
-  "left_wrist_yaw_joint",
-  "left_wrist_pitch_joint",
-  "left_wrist_roll_joint",
-  "right_shoulder_pitch_joint",
-  "right_shoulder_roll_joint",
-  "right_shoulder_yaw_joint",
-  "right_elbow_joint",
-  "right_wrist_yaw_joint",
-  "right_wrist_pitch_joint",
-  "right_wrist_roll_joint",
+from src.tasks.locomanipulation.config.carry_reference import CarryPoseReference
+from src.tasks.locomanipulation.config.g1.reference import (
+  G1_CARRY_REFERENCE_23,
+  G1_CARRY_REFERENCE_29,
 )
+from src.tasks.locomanipulation.config.x2.reference import X2_CARRY_REFERENCE
 
-END_EFFECTOR_BODY_NAMES = ("left_wrist_roll_link", "right_wrist_roll_link")
-REFERENCE_FRAME_BODY_NAME = "torso_link"
 
-# A measured X2 carry-pose reference. Values are radians and can be replaced with
-# --base-pose-json for another object or grasp.
-DEFAULT_CARRY_POSE = {
-  "left_shoulder_pitch_joint": -0.081,
-  "left_shoulder_roll_joint": 0.026,
-  "left_shoulder_yaw_joint": -0.049,
-  "left_elbow_joint": -2.188,
-  "left_wrist_yaw_joint": 0.238,
-  "left_wrist_pitch_joint": 0.326,
-  "left_wrist_roll_joint": 0.215,
-  "right_shoulder_pitch_joint": -0.081,
-  "right_shoulder_roll_joint": -0.026,
-  "right_shoulder_yaw_joint": 0.049,
-  "right_elbow_joint": -2.188,
-  "right_wrist_yaw_joint": -0.238,
-  "right_wrist_pitch_joint": 0.326,
-  "right_wrist_roll_joint": -0.215,
+CARRY_REFERENCES = {
+  "x2": X2_CARRY_REFERENCE,
+  "g1": G1_CARRY_REFERENCE_29,
+  "g1_23dof": G1_CARRY_REFERENCE_23,
 }
 
-# Reference terminal-link poses from X2 forward kinematics, in torso_link frame.
-# XYZ is in metres; quaternion order is (w, x, y, z). Rounded to 3 decimals.
-# These are wrist_roll_link origins, not fingertip or grasp-point positions.
-# Left:  xyz=(0.198,  0.202, 0.170), quat=(0.574, -0.004, -0.819,  0.009)
-# Right: xyz=(0.198, -0.202, 0.169), quat=(0.576,  0.004, -0.817, -0.009)
-# Endpoint midpoint: xyz=(0.198, 0.000, 0.170)
+# Default X2 inputs retained for callers of the original generator.
+DEFAULT_XML = X2_CARRY_REFERENCE.xml
+DEFAULT_OUTPUT = X2_CARRY_REFERENCE.dataset
+ARM_JOINT_NAMES = X2_CARRY_REFERENCE.arm_names
+END_EFFECTOR_BODY_NAMES = X2_CARRY_REFERENCE.hands
+DEFAULT_CARRY_POSE = X2_CARRY_REFERENCE.pose
+REFERENCE_FRAME_BODY_NAME = "torso_link"
 
 
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--xml", type=Path, default=DEFAULT_XML)
-  parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+  parser.add_argument("--robot", choices=tuple(CARRY_REFERENCES), default="x2")
+  parser.add_argument("--xml", type=Path)
+  parser.add_argument("--output", type=Path)
   parser.add_argument(
     "--base-pose-json",
     type=Path,
-    help="JSON object containing exactly the 14 X2 arm-joint values.",
+    help="JSON object containing exactly the selected robot’s arm-joint values.",
   )
   parser.add_argument(
     "--num-poses",
@@ -285,10 +262,10 @@ def parse_args() -> argparse.Namespace:
   return parser.parse_args()
 
 
-def load_base_pose(path: Path | None) -> dict[str, float]:
-  """Return a validated carry pose with exactly the X2 arm joints."""
+def load_base_pose(path: Path | None, arm_names=ARM_JOINT_NAMES, reference=None) -> dict[str, float]:
+  """Return a validated carry pose for the selected arm joints."""
   if path is None:
-    pose = DEFAULT_CARRY_POSE
+    pose = DEFAULT_CARRY_POSE if reference is None else reference
   else:
     with path.open(encoding="utf-8") as input_file:
       pose = json.load(input_file)
@@ -296,13 +273,13 @@ def load_base_pose(path: Path | None) -> dict[str, float]:
       raise ValueError(f"{path} must contain a JSON object")
 
   names = set(pose)
-  expected = set(ARM_JOINT_NAMES)
+  expected = set(arm_names)
   if names != expected:
     raise ValueError(
       "carry-pose joints must exactly match the X2 arm joints; "
       f"missing={sorted(expected - names)}, additional={sorted(names - expected)}"
     )
-  validated = {name: float(pose[name]) for name in ARM_JOINT_NAMES}
+  validated = {name: float(pose[name]) for name in arm_names}
   if not np.isfinite(list(validated.values())).all():
     raise ValueError("carry pose contains a non-finite joint value")
   return validated
@@ -357,8 +334,9 @@ def set_arm_qpos(
   data: mujoco.MjData,
   qpos_addresses: dict[str, int],
   arm_qpos: np.ndarray,
+  arm_names=ARM_JOINT_NAMES,
 ) -> None:
-  for index, name in enumerate(ARM_JOINT_NAMES):
+  for index, name in enumerate(arm_names):
     data.qpos[qpos_addresses[name]] = arm_qpos[index]
 
 
@@ -403,13 +381,14 @@ def solve_arm_ik(
   reference_frame_rotation: np.ndarray,
   parallel_axis_tolerance: float,
   joint_regularization: float,
+  arm_names=ARM_JOINT_NAMES,
 ) -> tuple[np.ndarray, float, float, float]:
   """Solve bounded bilateral endpoint-pose IK and return maximum residuals."""
   qpos_template = data.qpos.copy()
 
   def residual(arm_qpos: np.ndarray) -> np.ndarray:
     data.qpos[:] = qpos_template
-    set_arm_qpos(data, qpos_addresses, arm_qpos)
+    set_arm_qpos(data, qpos_addresses, arm_qpos, arm_names)
     mujoco.mj_forward(model, data)
     positions, rotations = end_effector_transforms(model, data, end_effector_body_ids)
     position_residual = ((positions - target_positions) / position_tolerance).ravel()
@@ -447,7 +426,7 @@ def solve_arm_ik(
     raise RuntimeError(result.message)
 
   data.qpos[:] = qpos_template
-  set_arm_qpos(data, qpos_addresses, result.x)
+  set_arm_qpos(data, qpos_addresses, result.x, arm_names)
   mujoco.mj_forward(model, data)
   positions, rotations = end_effector_transforms(model, data, end_effector_body_ids)
   max_position_error = float(np.linalg.norm(positions - target_positions, axis=1).max())
@@ -667,30 +646,32 @@ def playback(
       print("\nViewer closed.")
 
 
-def main() -> None:
-  args = parse_args()
-  if args.playback_duration <= 0.0:
-    raise ValueError("--playback-duration must be positive")
-  if args.playback_max_poses < 0:
-    raise ValueError("--playback-max-poses cannot be negative")
-  if args.playback_file is not None:
-    model = mujoco.MjModel.from_xml_path(str(args.xml))
-    data = mujoco.MjData(model)
-    dof_names, qpos_addresses, _ = scalar_joint_info(model)
-    end_effector_body_ids = tuple(
-      mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
-      for name in END_EFFECTOR_BODY_NAMES
-    )
-    if any(body_id < 0 for body_id in end_effector_body_ids):
-      raise ValueError(f"model is missing endpoint bodies {END_EFFECTOR_BODY_NAMES}")
-    motion_data = load_motion_data(args.playback_file, len(dof_names))
-    playback(
-      model, data, motion_data, dof_names, qpos_addresses,
-      end_effector_body_ids, args.playback_duration,
-      args.playback_max_poses, args.playback_once,
-    )
-    return
+def load_model(
+  xml: Path, reference: CarryPoseReference,
+) -> tuple[mujoco.MjModel, mujoco.MjData, tuple[int, ...]]:
+  """Load the selected MJCF and resolve its carry endpoints."""
+  model = mujoco.MjModel.from_xml_path(str(xml))
+  data = mujoco.MjData(model)
+  endpoints = tuple(
+    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+    for name in reference.hands
+  )
+  if any(body_id < 0 for body_id in endpoints):
+    raise ValueError(f"model is missing endpoint bodies {reference.hands}")
+  return model, data, endpoints
 
+
+def play_dataset(args: argparse.Namespace, reference: CarryPoseReference) -> None:
+  model, data, endpoints = load_model(args.xml, reference)
+  dof_names, qpos_addresses, _ = scalar_joint_info(model)
+  motion_data = load_motion_data(args.playback_file, len(dof_names))
+  playback(
+    model, data, motion_data, dof_names, qpos_addresses,
+    endpoints, args.playback_duration, args.playback_max_poses, args.playback_once,
+  )
+
+
+def generate_dataset(args: argparse.Namespace, reference: CarryPoseReference) -> None:
   if args.num_poses < 1:
     raise ValueError("--num-poses must be positive")
   if args.num_candidates is not None and args.num_candidates < 1:
@@ -734,33 +715,27 @@ def main() -> None:
   if min(positive_values) <= 0.0:
     raise ValueError("all tolerances, bounds, and standard deviations must be positive")
 
-  model = mujoco.MjModel.from_xml_path(str(args.xml))
-  data = mujoco.MjData(model)
+  arm_names = reference.arm_names
+  model, data, end_effector_body_ids = load_model(args.xml, reference)
   dof_names, qpos_addresses, joint_ids = scalar_joint_info(model)
-  if len(dof_names) != 29:
-    raise ValueError(f"expected 29 scalar X2 joints, found {len(dof_names)}")
-  if not set(ARM_JOINT_NAMES).issubset(qpos_addresses):
-    raise ValueError("X2 model is missing one or more required arm joints")
+  if len(dof_names) != reference.joint_count:
+    raise ValueError(f"expected {reference.joint_count} scalar joints, found {len(dof_names)}")
+  if tuple(dof_names[index] for index in reference.motion_dof_indices) != arm_names:
+    raise ValueError("MJCF arm joint order does not match the selected carry dataset layout")
 
-  base_pose = load_base_pose(args.base_pose_json)
-  seed_arm_qpos = np.array([base_pose[name] for name in ARM_JOINT_NAMES])
-  arm_joint_ids = np.array([joint_ids[name] for name in ARM_JOINT_NAMES])
+  base_pose = load_base_pose(args.base_pose_json, arm_names, reference.pose)
+  seed_arm_qpos = np.array([base_pose[name] for name in arm_names])
+  arm_joint_ids = np.array([joint_ids[name] for name in arm_names])
   model_lower = model.jnt_range[arm_joint_ids, 0]
   model_upper = model.jnt_range[arm_joint_ids, 1]
   lower = model_lower
   upper = model_upper
   if np.any(seed_arm_qpos < lower) or np.any(seed_arm_qpos > upper):
-    raise ValueError("base carry pose violates X2 joint limits")
+    raise ValueError("base carry pose violates model joint limits")
   # This is an optimizer starting point only. With the default zero
   # regularization it neither adds a residual nor narrows the feasible set.
   initial_arm_qpos = seed_arm_qpos.copy()
 
-  end_effector_body_ids = tuple(
-    mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
-    for name in END_EFFECTOR_BODY_NAMES
-  )
-  if any(body_id < 0 for body_id in end_effector_body_ids):
-    raise ValueError(f"model is missing endpoint bodies {END_EFFECTOR_BODY_NAMES}")
   reference_frame_body_id = mujoco.mj_name2id(
     model, mujoco.mjtObj.mjOBJ_BODY, REFERENCE_FRAME_BODY_NAME
   )
@@ -768,7 +743,7 @@ def main() -> None:
     raise ValueError(f"model is missing reference body {REFERENCE_FRAME_BODY_NAME!r}")
   data.qpos[:] = model.qpos0
   data.qvel[:] = 0.0
-  set_arm_qpos(data, qpos_addresses, seed_arm_qpos)
+  set_arm_qpos(data, qpos_addresses, seed_arm_qpos, arm_names)
   mujoco.mj_forward(model, data)
   reference_positions, reference_rotations = end_effector_transforms(
     model, data, end_effector_body_ids
@@ -808,7 +783,7 @@ def main() -> None:
   num_candidates = args.num_candidates or args.num_poses * 20
   motion_data: dict[str, dict[str, np.ndarray | int]] = {}
   data.qpos[:] = model.qpos0
-  set_arm_qpos(data, qpos_addresses, seed_arm_qpos)
+  set_arm_qpos(data, qpos_addresses, seed_arm_qpos, arm_names)
   seed_dof = np.array(
     [data.qpos[qpos_addresses[name]] for name in dof_names], dtype=np.float32
   )
@@ -899,6 +874,7 @@ def main() -> None:
         reference_frame_rotation,
         args.max_parallel_axis_error,
         args.joint_regularization,
+        arm_names,
       )
     except RuntimeError:
       ik_skips += 1
@@ -918,7 +894,7 @@ def main() -> None:
       continue
 
     data.qpos[:] = model.qpos0
-    set_arm_qpos(data, qpos_addresses, arm_qpos)
+    set_arm_qpos(data, qpos_addresses, arm_qpos, arm_names)
     dof = np.array([data.qpos[qpos_addresses[name]] for name in dof_names], dtype=np.float32)
     dof = safe_float32_dof(dof, dof_names, model, joint_ids)
     set_dof_qpos(data, dof, dof_names, qpos_addresses)
@@ -984,6 +960,23 @@ def main() -> None:
       args.playback_max_poses,
       args.playback_once,
     )
+
+
+def main() -> None:
+  args = parse_args()
+  reference = CARRY_REFERENCES[args.robot]
+  args.xml = args.xml or reference.xml
+  args.output = args.output or reference.dataset
+  if args.ground_parallel and not reference.supports_ground_parallel:
+    raise ValueError("--ground-parallel uses X2 grasp axes")
+  if args.playback_duration <= 0.0:
+    raise ValueError("--playback-duration must be positive")
+  if args.playback_max_poses < 0:
+    raise ValueError("--playback-max-poses cannot be negative")
+  if args.playback_file is not None:
+    play_dataset(args, reference)
+  else:
+    generate_dataset(args, reference)
 
 
 if __name__ == "__main__":

@@ -32,8 +32,6 @@ from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
-import src.tasks.locomanipulation.mdp as mdp
-
 
 def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
   """Create base locomanipulation task configuration."""
@@ -541,7 +539,7 @@ def make_locomanipulation_env_cfg() -> ManagerBasedRlEnvCfg:
       azimuth=90.0,
     ),
     sim=SimulationCfg(
-      nconmax=35,
+      nconmax=128,
       njmax=1500,
       mujoco=MujocoCfg(
         timestep=0.005,

@@ -15,6 +15,9 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from src import SRC_PATH
 from src.tasks.locomanipulation import mdp
+from src.tasks.locomanipulation.config.carry_finetune import configure_carry_finetune
+from src.tasks.locomanipulation.config.g1.reference import G1_CARRY_REFERENCE_29
+from src.tasks.locomanipulation.config.g1.torque_compensation import configure_g1_torque_compensation
 from src.tasks.locomanipulation.mdp import UniformVelocityCommandCfg
 from src.tasks.locomanipulation.mdp.events import TriangleWaveForceEvent
 from src.tasks.locomanipulation.mdp.upper_body_action import UpperBodyMotionActionCfg
@@ -68,7 +71,6 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
 
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.contact_sensor_maxmatch = 500
-  cfg.sim.nconmax = 48
 
   robot_cfg, action_scale = get_g1_robot_cfg(preset="unitree_stiff")
   cfg.scene.entities = {"robot": robot_cfg}
@@ -136,22 +138,21 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
     r"waist_pitch_joint",
   )
 
-  # Upper-body motion playback from BONES-SEED.
-  # Standing envs → manipulation gestures (bones_seed/bones_seed.pkl).
-  # Walking envs → coordinated locomotion arm swing (bones_seed/bones_seed_locomotion.pkl).
+  # Hold one manipulation pose throughout the episode.
   motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "bones_seed" / "bones_seed_g1_split.pkl")
-  loco_motion_file = str(SRC_PATH / "assets" / "data" / "g1" / "bones_seed" / "bones_seed_locomotion_g1_split.pkl")
   cfg.actions["upper_body_motion"] = UpperBodyMotionActionCfg(
     entity_name="robot",
     motion_file=motion_file,
-    locomotion_motion_file=loco_motion_file,
+    locomotion_motion_file=None,
     motion_dof_indices=MOTION_DOF_INDICES,
     default_pose_ratio=1.0,
     command_threshold=0.1,
     waist_yaw_only=True,
     exclude_waist=True,
-    pose_only=False,
+    pose_only=True,
   )
+
+  configure_g1_torque_compensation(cfg, reduced=False)
 
   ## Commands ##
 
@@ -317,7 +318,8 @@ def unitree_g1_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBase
   import importlib.util as _ilu
   _postures_path = str(Path(__file__).resolve().parents[5] / "scripts" / "postures.py")
   _spec = _ilu.spec_from_file_location("postures", _postures_path)
-  _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+  _mod = _ilu.module_from_spec(_spec)
+  _spec.loader.exec_module(_mod)
   height_postures = _mod.HEIGHT_POSTURES
   cfg.rewards["pose"].params["height_postures"] = height_postures
   cfg.rewards["stand_still"].params["height_postures"] = height_postures
@@ -472,3 +474,11 @@ def unitree_g1_locomanipulation_flat_env_cfg(play: bool = False) -> ManagerBased
     twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
 
   return cfg
+
+
+def unitree_g1_locomanipulation_carry_finetune_flat_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Configure Flat carry-pose fine-tuning for this G1 variant."""
+  cfg = unitree_g1_locomanipulation_flat_env_cfg(play=play)
+  return configure_carry_finetune(cfg, play=play, reference=G1_CARRY_REFERENCE_29)
