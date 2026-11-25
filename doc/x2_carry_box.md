@@ -59,9 +59,8 @@ depth and height: all sampled dimensions must fit with 3 cm of torso clearance
 without moving the box away from the hand midpoint. Narrow or vertically
 misaligned grasps are also excluded. The dataset is unchanged, and the terminal
 reports the eligible pose count. Smaller requested boxes can admit more poses.
-For the default ranges, 91 of 512 test poses are eligible. Welds anchor at the
-side-face grasp points with tighter solver settings. A 1,000-step native-viewer
-run of the supplied checkpoint with 10 kg boxes measured a maximum grasp
-anchor error of 0.487 mm and relative orientation error of 0.171 degrees.
+For the default ranges, 100 of the 512 test poses are eligible. Welds anchor at
+the side-face grasp points with tighter solver settings. The image shows three
+eligible static poses with boxes fitted to their palms.
 
 ![Sampled ground-parallel carry poses with variable box dimensions](x2_sampled_carry_boxes.png)

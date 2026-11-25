@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Generate X2 or G1 carry-pose clips by sampling arm endpoint poses and solving IK.
 
-The supplied reference pose defines one endpoint pose for each arm. Each
+The endpoint position is the terminal hand body center of mass, matching the
+carry-training force application point. Endpoint orientation uses the hand
+body frame. The supplied reference pose defines one endpoint per arm. Each
 candidate samples a parallel pair of endpoint poses in the ``torso_link``
 frame, then solves bounded IK for both arms. The endpoints share forward and
 height coordinates, while their lateral positions and orientations can vary
@@ -35,10 +37,9 @@ To inspect an existing dataset without generating new poses:
 To use a measured carry pose instead of the embedded reference, save the robot’s arm
 joint values as a JSON object and pass ``--base-pose-json path/to/pose.json``.
 
-To regenerate the G1 training assets, use either ``--robot g1`` or
-``--robot g1_23dof`` with ``--num-poses 64 --translation-range 0.04
---rotation-range-deg 5``. The smaller range retains usable orientation
-variation for the 23-DOF wrist geometry.
+For either G1 variant, pass ``--robot g1`` or ``--robot g1_23dof``.
+The repository datasets were generated with the geometry parameters recorded
+in their adjacent JSON metadata files.
 """
 
 from __future__ import annotations
@@ -345,8 +346,8 @@ def end_effector_transforms(
   data: mujoco.MjData,
   end_effector_body_ids: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray]:
-  """Return terminal arm-link origins and rotations in the world frame."""
-  positions = data.xpos[list(end_effector_body_ids)].copy()
+  """Return hand body COM positions and link rotations in the world frame."""
+  positions = data.xipos[list(end_effector_body_ids)].copy()
   rotations = data.xmat[list(end_effector_body_ids)].reshape(2, 3, 3).copy()
   return positions, rotations
 
@@ -943,6 +944,7 @@ def generate_dataset(args: argparse.Namespace, reference: CarryPoseReference) ->
   joblib.dump(motion_data, args.output)
   metadata = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
   metadata["generated_poses"] = len(motion_data)
+  metadata["endpoint_position"] = "body_com"
   args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n")
   print(
     f"Wrote {args.output}: {len(motion_data)} static clips, "

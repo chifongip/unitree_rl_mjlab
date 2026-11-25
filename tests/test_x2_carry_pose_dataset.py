@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import sys
 from pathlib import Path
@@ -223,3 +224,45 @@ def test_generator_rejects_mismatched_arm_column_order(monkeypatch, tmp_path):
   with pytest.raises(ValueError, match="arm joint order"):
     generator.main()
   assert not output.exists()
+
+
+@pytest.mark.parametrize("robot", ["x2", "g1", "g1_23dof"])
+def test_endpoints_match_training_force_centers(robot):
+  reference = generator.CARRY_REFERENCES[robot]
+  model, data, body_ids = generator.load_model(reference.xml, reference)
+  for name, value in reference.pose.items():
+    data.joint(name).qpos = value
+  mujoco.mj_forward(model, data)
+
+  positions, rotations = generator.end_effector_transforms(model, data, body_ids)
+
+  np.testing.assert_allclose(positions, data.xipos[list(body_ids)], atol=1e-12)
+  np.testing.assert_allclose(rotations, data.xmat[list(body_ids)].reshape(2, 3, 3))
+  assert np.all(np.linalg.norm(positions - data.xpos[list(body_ids)], axis=1) > 0.05)
+
+
+@pytest.mark.parametrize("robot", ["x2", "g1", "g1_23dof"])
+def test_generated_pose_alignment_uses_force_centers(robot, tmp_path, monkeypatch):
+  output = tmp_path / f"{robot}.pkl"
+  monkeypatch.setattr(sys, "argv", [
+    str(SCRIPT_PATH), "--robot", robot, "--output", str(output),
+    "--num-poses", "2", "--num-candidates", "100", "--frames-per-clip", "1",
+    "--translation-range", "0.02", "--rotation-range-deg", "2",
+  ])
+  generator.main()
+
+  clips = joblib.load(output)
+  assert len(clips) == 2
+  reference = generator.CARRY_REFERENCES[robot]
+  model, data, body_ids = generator.load_model(reference.xml, reference)
+  names, addresses, _ = generator.scalar_joint_info(model)
+  for clip in clips.values():
+    generator.set_dof_qpos(data, clip["dof"][0], names, addresses)
+    mujoco.mj_forward(model, data)
+    torso = data.body("torso_link")
+    local_coms = (torso.xmat.reshape(3, 3).T @ (
+      data.xipos[list(body_ids)] - torso.xpos
+    ).T).T
+    assert np.max(np.abs(local_coms[0, [0, 2]] - local_coms[1, [0, 2]])) <= 0.002
+    assert not generator.has_self_collision(model, data, max_penetration=0.001)
+  assert json.loads(output.with_suffix(".json").read_text())["endpoint_position"] == "body_com"

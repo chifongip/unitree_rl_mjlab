@@ -133,11 +133,15 @@ When velocity command magnitude < 0.1, three rewards reinforce stable stance:
 
 ### Carry-Pose Dataset Generator
 
-Generate static carry poses with bilateral endpoint IK. The robot reference pose defines the initial wrist endpoints. IK searches within the model’s arm joint limits. Endpoint offsets are relative to each reference endpoint in the `torso_link` frame: +X is forward, +Y is left, and +Z is up. Both wrists must stay in front and on their respective sides; their X and Z coordinates are kept parallel, while their Y positions and orientations may differ. Unreachable or self-penetrating candidates are skipped.
+Generate static carry poses with bilateral endpoint IK. The robot reference pose defines the initial wrist endpoints. Endpoint positions use the terminal hand body centers of mass, matching the carry-training force application points. Endpoint orientations use the hand link frames. IK searches within the model’s arm joint limits. Endpoint offsets are relative to each reference endpoint in the `torso_link` frame: +X is forward, +Y is left, and +Z is up. Both wrists must stay in front and on their respective sides; their X and Z coordinates are kept parallel, while their Y positions and orientations may differ. Unreachable or self-penetrating candidates are skipped.
 
 ```bash
 python scripts/generate_x2_carry_pose_dataset.py \
-    --num-poses 512 --num-candidates 10240 \
+    --num-poses 512 --seed 42 \
+    --position-tolerance 0.01 --max-end-effector-position-error 0.02 \
+    --max-parallel-axis-error 0.02 \
+    --endpoint-offset-lower -0.15 -0.15 -0.15 \
+    --endpoint-offset-upper 0.15 0.15 0.15 \
     --output src/assets/data/x2/bones_seed/carry_poses_x2.pkl
 ```
 
@@ -521,11 +525,11 @@ All configs also define `LOWER_BODY_JOINT_NAMES`, `LOWER_BODY_JOINT_PATTERNS`, a
 
 | Aspect | G1 29-DOF | G1 23-DOF | Agibot X2 |
 |--------|-----------|-----------|-----------|
-| Nominal height | 0.76m | 0.76m | 0.66m |
+| Nominal height | 0.76m | 0.76m | 0.64m |
 | Upper-body DOFs | 14 (7/arm) | 10 (5/arm) | 14 (7/arm) |
-| Wrist bodies | `wrist_yaw_link` | `wrist_roll_rubber_hand` | `wrist_yaw_link` |
-| Motion data | `accad/accad_all.pkl` | `accad/accad_all_g1_23dof_clean.pkl` | `amass/amass_all.pkl` |
-| Height postures | `postures.py` | `postures.py` | `postures_x2.py` |
+| Wrist bodies | `wrist_yaw_link` | `wrist_roll_rubber_hand` | `wrist_roll_link` |
+| Base motion data | `bones_seed_g1_split.pkl` | `bones_seed_g1_23dof_split.pkl` | `bones_seed_x2_split.pkl` |
+| Height postures | `postures.py` | `postures.py` | `postures_x2_recorded.py` |
 | Gain presets | `G1_GAIN_PRESETS` | `G1_23DOF_GAIN_PRESETS` | `X2_GAIN_PRESETS` |
 | Symmetry | `G1Symmetry` | `G1_23DOFSymmetry` | `X2Symmetry` |
 | Waist DOFs | yaw/roll/pitch | yaw only | yaw/pitch/roll |

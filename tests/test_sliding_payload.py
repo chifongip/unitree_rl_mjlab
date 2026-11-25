@@ -765,8 +765,8 @@ def test_carry_configuration_isolated_from_basic_tasks_and_preserves_rewards():
   for basic in (base, flat_cfg(), rough_cfg()):
     assert basic.events["hand_force"].func is TriangleWaveForceEvent
     assert basic.observations["critic"].terms["wrist_force"].params["asset_cfg"].body_names == (
-      "left_wrist_yaw_link",
-      "right_wrist_yaw_link",
+      "left_wrist_roll_link",
+      "right_wrist_roll_link",
     )
     assert (
       basic.actions["upper_body_motion"].motion_file

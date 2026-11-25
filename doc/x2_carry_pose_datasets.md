@@ -2,7 +2,9 @@
 
 ## Current training dataset
 
-Recorded on 2026-09-28 from the supplied generation parameters:
+The current training dataset was regenerated using hand-body centers of mass as
+endpoints. Its adjacent `carry_poses_x2.json` records the generator settings,
+including seed 42 and the following geometry parameters:
 
 ```bash
 --num-poses 512 \
@@ -13,13 +15,12 @@ Recorded on 2026-09-28 from the supplied generation parameters:
 --endpoint-offset-upper 0.15 0.15 0.15
 ```
 
-Position values are in meters. Endpoint offsets and parallel-axis checks in
-the existing generator use the torso frame. Other generation options were
-not supplied in this record.
+Position values are in meters. Endpoint offsets and parallel-axis checks use
+the torso frame.
 
 ## Ground-parallel test dataset
 
-The test set uses 512 new poses and seed 43, written separately to
+The COM-based test set uses 512 poses and seed 43, written separately to
 `src/assets/data/x2/bones_seed/carry_poses_x2_test_ground_parallel.pkl`.
 Its adjacent JSON file records the complete generator configuration.
 
@@ -45,11 +46,13 @@ Every saved float32 pose must meet the 2 mm endpoint alignment limit, the
 self-collision check. These are finite numerical tolerances, not exact
 mathematical equality. Training data is not overwritten.
 
-Validation of the generated 512 poses in Conda found a maximum hand-height
-difference of 0.569 mm, maximum forward-alignment error of 0.654 mm, and maximum
-wrist tilt of 0.926 degrees. All saved poses passed joint-limit and
-self-collision checks. There were no exact pose duplicates in the current
-training file. The `.validation.json` sidecar contains these measured results.
+Validation of the regenerated 512 poses found a maximum hand-COM height
+difference of 0.575 mm, maximum forward-alignment error of 0.554 mm, and maximum
+wrist tilt of 0.967 degrees. All poses passed joint-limit and self-collision
+checks, and none exactly duplicated a pose in the current training file.
+With the default physical-box playback size ranges, 100 poses passed the
+centered-grasp and torso-clearance filter. The `.validation.json` sidecar
+records these results.
 
 ![Ground-parallel test-set geometry and wrist tilt](x2_ground_parallel_test_set.png)
 

@@ -195,7 +195,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
   ].site_names = site_names
   cfg.observations["critic"].terms["wrist_force"].params[
     "asset_cfg"
-  ].body_names = ("left_wrist_yaw_link", "right_wrist_yaw_link")
+  ].body_names = ("left_wrist_roll_link", "right_wrist_roll_link")
 
   ## Hyperparameters ##
 
@@ -250,11 +250,11 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
       },
       "asset_cfg": SceneEntityCfg(
         "robot",
-        body_names=("left_wrist_yaw_link", "right_wrist_yaw_link"),
+        body_names=("left_wrist_roll_link", "right_wrist_roll_link"),
       ),
       "max_force_estimation": True,
       "constraint_joint_names_by_body": {
-        "left_wrist_yaw_link": (
+        "left_wrist_roll_link": (
           "left_shoulder_pitch_joint",
           "left_shoulder_roll_joint",
           "left_shoulder_yaw_joint",
@@ -263,7 +263,7 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
           "left_wrist_pitch_joint",
           "left_wrist_roll_joint",
         ),
-        "right_wrist_yaw_link": (
+        "right_wrist_roll_link": (
           "right_shoulder_pitch_joint",
           "right_shoulder_roll_joint",
           "right_shoulder_yaw_joint",
@@ -470,8 +470,8 @@ def agibot_x2_locomanipulation_rough_env_cfg(play: bool = False) -> ManagerBased
 
     # Per-hand constant force (per-body format, body_frame rotates with robot):
     # cfg.events["hand_force"].params["constant_force"] = {
-    #     "left_wrist_yaw_link": {"x": 5.0, "y": -5.0, "z": -20.0},
-    #     "right_wrist_yaw_link": {"x": 5.0, "y": 5.0, "z": -20.0},
+    #     "left_wrist_roll_link": {"x": 5.0, "y": -5.0, "z": -20.0},
+    #     "right_wrist_roll_link": {"x": 5.0, "y": 5.0, "z": -20.0},
     # }
     # cfg.events["hand_force"].params["body_frame"] = True
 

@@ -179,6 +179,11 @@ def test_x2_triangle_force_estimation_runs_with_real_rotational_jacobians():
   env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
   try:
     env.reset()
+    event = env.event_manager.get_term_cfg("hand_force").func
+    robot = env.scene["robot"]
+    assert [robot.body_names[i] for i in event._body_ids] == [
+      "left_wrist_roll_link", "right_wrist_roll_link",
+    ]
     for _ in range(8):
       obs, reward, *_ = env.step(torch.zeros(2, 15))
       assert torch.isfinite(obs["actor"]).all()
@@ -189,5 +194,36 @@ def test_x2_triangle_force_estimation_runs_with_real_rotational_jacobians():
       assert (forces[..., :2] == 0).all()
       assert ((forces[..., 2] >= -20.) & (forces[..., 2] <= 0.)).all()
     assert torch.count_nonzero(forces) > 0
+    critic_cfg = env.observation_manager.get_term_cfg("critic", "wrist_force").params["asset_cfg"]
+    from src.tasks.locomanipulation.mdp.observations import wrist_external_force
+    assert [robot.body_names[i] for i in critic_cfg.body_ids] == [
+      "left_wrist_roll_link", "right_wrist_roll_link",
+    ]
+    observed = wrist_external_force(env, critic_cfg)
+    assert torch.count_nonzero(observed) > 0
+    yaw_ids, _ = robot.find_bodies(("left_wrist_yaw_link", "right_wrist_yaw_link"))
+    assert torch.count_nonzero(robot.data.body_external_wrench[:, yaw_ids]) == 0
   finally:
     env.close()
+
+
+@pytest.mark.parametrize("terrain", ["flat", "rough"])
+@pytest.mark.parametrize("play", [False, True])
+def test_x2_base_force_and_critic_use_terminal_wrist(terrain, play):
+  from src.tasks.locomanipulation.config.x2.env_cfgs import (
+    agibot_x2_locomanipulation_flat_env_cfg,
+    agibot_x2_locomanipulation_rough_env_cfg,
+  )
+  from src.tasks.locomanipulation.config.x2.reference import X2_CARRY_REFERENCE
+
+  factory = (agibot_x2_locomanipulation_flat_env_cfg if terrain == "flat"
+             else agibot_x2_locomanipulation_rough_env_cfg)
+  cfg = factory(play=play)
+  params = cfg.events["hand_force"].params
+  assert params["asset_cfg"].body_names == X2_CARRY_REFERENCE.hands
+  critic_asset = cfg.observations["critic"].terms["wrist_force"].params["asset_cfg"]
+  assert critic_asset.body_names == X2_CARRY_REFERENCE.hands
+  for side, hand in zip(("left", "right"), X2_CARRY_REFERENCE.hands, strict=True):
+    assert params["constraint_joint_names_by_body"][hand] == tuple(
+      name for name in X2_CARRY_REFERENCE.arm_names if name.startswith(f"{side}_")
+    )

@@ -1,5 +1,6 @@
 {
-  "xml": "/home/ubuntu/unitree_rl_mjlab/src/assets/robots/agibot_x2/xmls/x2_ultra_no_head.xml",
+  "robot": "x2",
+  "xml": "/home/ubuntu/LocoMani-SuperMimic/unitree_rl_mjlab/src/assets/robots/agibot_x2/xmls/x2_ultra_no_head.xml",
   "output": "src/assets/data/x2/bones_seed/carry_poses_x2_test_ground_parallel.pkl",
   "base_pose_json": null,
   "num_poses": 512,
@@ -36,5 +37,6 @@
   "playback_duration": 0.75,
   "playback_max_poses": 0,
   "playback_once": false,
-  "generated_poses": 512
+  "generated_poses": 512,
+  "endpoint_position": "body_com"
 }
