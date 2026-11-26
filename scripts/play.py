@@ -24,6 +24,7 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
+from src.tasks.locomanipulation.config.g1.reference import CARRY_23
 from src.tasks.locomanipulation.config.x2.reference import X2_CARRY_POSE
 
 
@@ -69,6 +70,7 @@ PREDEFINED_POSES: list[dict[str, float]] = [
     "right_elbow_joint": 1.57,
     "right_wrist_roll_joint": 0.0,
   },
+  dict(CARRY_23),
 ]
 
 # X2 predefined poses for the keyboard and welded-box playback.

@@ -16,6 +16,19 @@ from src.tasks.locomanipulation.config.g1.reference import ARM_23, ARM_29, CARRY
 from src.tasks.locomanipulation.mdp.payload import SlidingBoxForceEvent
 
 
+def test_eval_carry_presets_match_g1_references():
+  from scripts.eval import POSE_PRESETS
+
+  assert POSE_PRESETS["g1_carry"] == CARRY_29
+  assert POSE_PRESETS["g1_23dof_carry"] == CARRY_23
+
+
+def test_play_selects_carry_pose_for_g1_23dof():
+  from scripts.play import PREDEFINED_POSES
+
+  assert PREDEFINED_POSES[3] == CARRY_23
+
+
 @pytest.mark.parametrize("robot,arm_names", [("G1", ARM_29), ("G1-23Dof", ARM_23)])
 @pytest.mark.parametrize("suffix", ["Flat", "Rough", "Carry-Finetune-Flat"])
 def test_g1_training_factory(robot, arm_names, suffix):

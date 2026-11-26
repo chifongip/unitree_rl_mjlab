@@ -43,6 +43,7 @@ from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.torch import configure_torch_backends
 
+from src.tasks.locomanipulation.config.g1.reference import CARRY_23, CARRY_29
 from src.tasks.locomanipulation.config.x2.reference import X2_CARRY_POSE
 
 
@@ -96,6 +97,8 @@ POSE_PRESETS: dict[str, dict[str, float]] = {
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_roll_joint": 0.0,
     },
+    "g1_carry": dict(CARRY_29),
+    "g1_23dof_carry": dict(CARRY_23),
     "x2_carry": dict(X2_CARRY_POSE),
 }
 

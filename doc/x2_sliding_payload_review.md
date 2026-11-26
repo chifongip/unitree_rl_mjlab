@@ -146,7 +146,7 @@ and load. Numpad 8/2 changes forward/backward velocity, 4/6 changes sideways
 velocity, 7/9 changes yaw velocity, and 5 stops. Contents can legitimately stick
 or settle against a wall when the applied acceleration and tilt remain steady.
 
-Evaluation accepts `--force-conditions none payload --body-poses x2_carry`.
+Evaluation accepts `--force-conditions "('none', 'payload')" --body-poses "('x2_carry',)"`.
 
 ## Verification and limits
 

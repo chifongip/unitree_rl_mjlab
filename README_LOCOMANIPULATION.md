@@ -314,6 +314,8 @@ python scripts/play.py Unitree-G1-Locomanipulation-Flat \
 | KP_0 | reset height to nominal | instant |
 | F8-F11 | predefined upper body poses | instant |
 
+Press F11 to select the G1 23-DOF carry pose for G1 playback or the X2 reference carry pose for X2 playback.
+
 ### Play-Mode Testing Flags
 
 Set these in the config to test specific conditions:
@@ -384,7 +386,7 @@ models:
 | `--eval-config <yaml>` | — | Multi-checkpoint config |
 | `--checkpoint-file <pt>` | — | Single checkpoint (ignored if `--eval-config` set) |
 | `--force-conditions` | `"none" "medium" "large"` | Force presets to test |
-| `--body-poses` | `"g1_zero"` | Pose presets (`"neutral"`, `"g1_zero"`, `"g1_23dof_zero"`, `"x2_zero"`) |
+| `--body-poses` | `('g1_zero',)` | Pose presets: `neutral`, `g1_zero`, `g1_23dof_zero`, `x2_zero`, `g1_carry`, `g1_23dof_carry`, `x2_carry` |
 | `--vel-x` | `(-0.5, 0.0, 0.5)` | Velocity x sweep (Python tuple syntax) |
 | `--vel-y` | `(0.0,)` | Velocity y sweep |
 | `--ang-z` | `(-0.5, 0.0, 0.5)` | Angular velocity z sweep |
@@ -392,6 +394,8 @@ models:
 | `--fixed-height` | auto | Override base height. Auto-detected from checkpoint params. |
 | `--metric` | `"combined"` | `"combined"`, `"linear"`, or `"angular"` |
 | `--viewer` | `"none"` | `"none"` or `"native"` (visual verification) |
+
+Select a carry pose with `--body-poses "('g1_carry',)"` for G1 29-DOF, `--body-poses "('g1_23dof_carry',)"` for G1 23-DOF, or `--body-poses "('x2_carry',)"` for X2.
 
 ### Viewer Mode
 
